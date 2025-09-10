@@ -66,3 +66,17 @@ docker compose down -v
 (`-v` también elimina volúmenes, útil si querés borrar la base de datos y empezar de cero).
 
 ---
+
+## API
+
+### Autenticación
+- `POST /register` → Registrar nuevo usuario (recibe JSON con `username` y `password`).
+- `POST /login` → Iniciar sesión (recibe JSON con `username` y `password`, devuelve JWT).
+
+### Como realizar una peticion protegida
+
+Para realizar una petición protegida, es necesario incluir el token JWT en el HEADER llamado `Authorization` dentro de la solicitud HTTP. 
+
+El formato del encabezado debe ser exactamente el siguiente:
+
+```Authorization: Bearer <JWT_TOKEN>```
