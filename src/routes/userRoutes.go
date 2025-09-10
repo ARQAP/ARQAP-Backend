@@ -10,7 +10,7 @@ import (
 func SetupUserRoutes(router *gin.Engine, service *services.UserService) {
     UserController := controllers.NewUserController(service)
 
-    // Public login route
+    // Public routes
     router.POST("/login", UserController.AuthenticateUser)
 	router.POST("/register", UserController.CreateUser)
 	router.GET("/users", UserController.GetAllUsers)
