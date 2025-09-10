@@ -1,15 +1,53 @@
 package main
 
 import (
-	"fmt"
-	"net/http"
+	"log"
+	"os"
+
+	"github.com/ARQAP/ARQAP-Backend/src/db"
+	"github.com/ARQAP/ARQAP-Backend/src/models"
+	"github.com/ARQAP/ARQAP-Backend/src/routes"
+	"github.com/ARQAP/ARQAP-Backend/src/services"
+	"github.com/gin-gonic/gin"
 )
 
 func main() {
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprintf(w, "Hola desde Go con Air!")
+
+	// Database connection
+	db, err := db.Connect()
+	if err != nil {
+		log.Fatalf("Error connecting to database: %v\n", err)
+	}
+
+	// Auto-migrate models
+	if err := db.AutoMigrate(&models.TestModel{}); err != nil {
+		log.Fatalf("Error during auto-migration: %v\n", err)
+	}
+
+	// Port and host setup
+	host := os.Getenv("SERVER_HOST")
+	if host == "" {
+		host = ":8080"
+	}
+
+	// Gin router setup
+	router := gin.Default()
+
+	// Services setup
+    testService := services.NewTestService(db)
+
+    // Routes setup
+    routes.SetupTestRoutes(router, testService)
+
+	router.GET("/", func(c *gin.Context) {
+		c.String(200, "Hello from Gin!")
 	})
 
-	fmt.Println("Server is running on :8080")
-	http.ListenAndServe(":8080", nil)
+	// Server run
+	if err := router.Run(host); err != nil {
+		log.Fatalf("Error starting server on %s: %v\n", host, err)
+	}
+
+	log.Printf("Server is running on %s\n", host)
+
 }
