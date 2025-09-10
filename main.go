@@ -20,7 +20,7 @@ func main() {
 	}
 
 	// Auto-migrate models
-	if err := db.AutoMigrate(&models.TestModel{}, &models.UserModel{}); err != nil {
+	if err := db.AutoMigrate(&models.UserModel{}, &models.ArchaeologistModel{}); err != nil {
 		log.Fatalf("Error during auto-migration: %v\n", err)
 	}
 
@@ -34,11 +34,11 @@ func main() {
 	router := gin.Default()
 
 	// Services setup
-	testService := services.NewTestService(db)
+	archaeologistService := services.NewArchaeologistService(db)
 	userService := services.NewUserService(db)
 
 	// Routes setup
-	routes.SetupTestRoutes(router, testService)
+	routes.SetupArchaeologistRoutes(router, archaeologistService)
 	routes.SetupUserRoutes(router, userService)
 
 	router.GET("/", func(c *gin.Context) {
