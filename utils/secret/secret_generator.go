@@ -6,6 +6,7 @@ import (
     "fmt"
     "log"
 )
+
 func GenerateSecret() {
 	b := make([]byte, 32)
 	_, err := rand.Read(b)
