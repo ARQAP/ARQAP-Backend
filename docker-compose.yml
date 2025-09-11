@@ -13,7 +13,6 @@ services:
       - DATABASE_URL=postgres://user:pass@db:5432/arqap?sslmode=disable
     depends_on:
       - db
-    command: sh -c "./utils/wfi/wait-for-it.sh db:5432 -- go run ./utils/user/init_user.go && air -c .air.toml"
 
   db:
     image: postgres:16
@@ -40,7 +39,7 @@ services:
       - db
     volumes:
       - pgadmin_data:/var/lib/pgadmin
-      - ./pgadmin/servers.json:/pgadmin4/servers.json
+      - ./servers.json:/pgadmin4/servers.json
 
 volumes:
   db_data:

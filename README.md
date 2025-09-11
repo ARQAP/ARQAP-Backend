@@ -31,7 +31,7 @@ ARQAP-Backend/
 Compilar y levantar servicios:
 
 ```bash
-docker compose up -d --build
+docker compose up --build
 ```
 
 Esto arranca:
