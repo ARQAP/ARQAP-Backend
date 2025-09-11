@@ -31,7 +31,7 @@ ARQAP-Backend/
 Compilar y levantar servicios:
 
 ```bash
-docker compose up --build
+docker compose up -d --build
 ```
 
 Esto arranca:
@@ -67,15 +67,31 @@ docker compose down -v
 
 ---
 
+## PGAdmin
+
+Dashboard de la BD disponible en:
+
+[http://localhost:5050](http://localhost:5050)
+
+Credenciales por defecto:
+- Usuario: `admin`
+- Contraseña: `admin`
+- Contraseña maestra: `pass`
+
 ## API
 
 ### Autenticación
+
 - `POST /register` → Registrar nuevo usuario (recibe JSON con `username` y `password`).
 - `POST /login` → Iniciar sesión (recibe JSON con `username` y `password`, devuelve JWT).
 
-### Como realizar una peticion protegida
+### Credenciales de usuario creadas en la inicialización
+- Usuario: `arqap`
+- Contraseña: `arqap`
 
-Para realizar una petición protegida, es necesario incluir el token JWT en el HEADER llamado `Authorization` dentro de la solicitud HTTP. 
+### Como realizar una peticion a una ruta protegida
+
+Para realizar una petición protegida, es necesario incluir el token JWT que responde la API al iniciar sesión en el HEADER llamado `Authorization` dentro de la solicitud HTTP.
 
 El formato del encabezado debe ser exactamente el siguiente:
 
