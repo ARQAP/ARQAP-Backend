@@ -21,7 +21,7 @@ func main() {
 	}
 
 	// Auto-migrate models
-	if err := db.AutoMigrate(&models.UserModel{}, &models.ArchaeologistModel{}, &models.CountryModel{}, &models.RegionModel{}); err != nil {
+	if err := db.AutoMigrate(&models.UserModel{}, &models.ArchaeologistModel{}, &models.CountryModel{}, &models.RegionModel{}, &models.ArchaeologicalSiteModel{}); err != nil {
 		log.Fatalf("Error during auto-migration: %v\n", err)
 	}
 
@@ -45,12 +45,14 @@ func main() {
 	router := gin.Default()
 
 	// Services setup
+	archaeologicalsiteService := services.NewArchaeologicalSiteService(db)
 	countryService := services.NewCountryService(db)
 	regionService := services.NewRegionService(db)
 	archaeologistService := services.NewArchaeologistService(db)
 	userService := services.NewUserService(db)
 
 	// Routes setup
+	routes.SetupArchaeologicalSiteRoutes(router, archaeologicalsiteService)
 	routes.SetupCountriesRoutes(router, countryService)
 	routes.SetupRegionRoutes(router, regionService)
 	routes.SetupArchaeologistRoutes(router, archaeologistService)
