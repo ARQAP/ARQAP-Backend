@@ -21,7 +21,7 @@ func main() {
 	}
 
 	// Auto-migrate models
-	if err := db.AutoMigrate(&models.UserModel{}, &models.ArchaeologistModel{}, &models.CountryModel{}, &models.RegionModel{}, &models.ArchaeologicalSiteModel{}, &models.ShelfModel{}); err != nil {
+	if err := db.AutoMigrate(&models.UserModel{}, &models.ArchaeologistModel{}, &models.CountryModel{}, &models.RegionModel{}, &models.ArchaeologicalSiteModel{}, &models.ShelfModel{}, &models.PhysicalLocationModel{}); err != nil {
 		log.Fatalf("Error during auto-migration: %v\n", err)
 	}
 
@@ -51,6 +51,7 @@ func main() {
 	archaeologistService := services.NewArchaeologistService(db)
 	userService := services.NewUserService(db)
 	shelfService := services.NewShelfService(db)
+	physicalLocationService := services.NewPhysicalLocationService(db)
 
 	// Routes setup
 	routes.SetupArchaeologicalSiteRoutes(router, archaeologicalsiteService)
@@ -59,6 +60,7 @@ func main() {
 	routes.SetupArchaeologistRoutes(router, archaeologistService)
 	routes.SetupUserRoutes(router, userService)
 	routes.SetupShelfRoutes(router, shelfService)
+	routes.SetupPhysicalLocationRoutes(router, physicalLocationService)
 
 	router.GET("/", func(c *gin.Context) {
 		c.String(200, "Hello from Gin!")
