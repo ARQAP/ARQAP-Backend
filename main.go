@@ -62,8 +62,9 @@ func main() {
 	routes.SetupShelfRoutes(router, shelfService)
 	routes.SetupPhysicalLocationRoutes(router, physicalLocationService)
 
+	// Test route
 	router.GET("/", func(c *gin.Context) {
-		c.String(200, "Hello from Gin!")
+		c.String(200, "Hello from Gin! Server is up and running.")
 	})
 
 	// Server run
