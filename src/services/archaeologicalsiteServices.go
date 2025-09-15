@@ -17,7 +17,7 @@ func NewArchaeologicalSiteService(db *gorm.DB) *ArchaeologicalSiteService {
 // GetAllArchaeologicalSites retrieves all ArchaeologicalSite records from the database
 func (s *ArchaeologicalSiteService) GetAllArchaeologicalSites() ([]models.ArchaeologicalSiteModel, error) {
 	var archaeologicalSites []models.ArchaeologicalSiteModel
-	result := s.db.Preload("Region").Find(&archaeologicalSites)
+	result := s.db.Preload("Region.Country").Find(&archaeologicalSites)
 	if result.Error != nil {
 		return nil, result.Error
 	}
