@@ -21,7 +21,13 @@ func main() {
 	}
 
 	// Auto-migrate models
-	if err := db.AutoMigrate(&models.UserModel{}, &models.ArchaeologistModel{}, &models.CountryModel{}, &models.RegionModel{}, &models.ArchaeologicalSiteModel{}, &models.CollectionModel{}); err != nil {
+	if err := db.AutoMigrate(&models.UserModel{}, 
+		&models.ArchaeologistModel{}, 
+		&models.CountryModel{}, 
+		&models.RegionModel{}, 
+		&models.ArchaeologicalSiteModel{}, 
+		&models.CollectionModel{},
+		&models.ShelfModel{}); err != nil {
 		log.Fatalf("Error during auto-migration: %v\n", err)
 	}
 
