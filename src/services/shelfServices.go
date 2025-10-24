@@ -14,24 +14,14 @@ func NewShelfService(db *gorm.DB) *ShelfService {
 	return &ShelfService{db: db}
 }
 
-// GetAllShelves retrieves all Shelf records from the database
-func (s *ShelfService) GetAllShelves() ([]models.ShelfModel, error) {
-	var shelves []models.ShelfModel
-	result := s.db.Find(&shelves)
+// GetAllShelfs retrieves all Shelf records from the database
+func (s *ShelfService) GetAllShelfs() ([]models.ShelfModel, error) {
+	var shelfs []models.ShelfModel
+		result := s.db.Find(&shelfs)
 	if result.Error != nil {
 		return nil, result.Error
 	}
-	return shelves, nil
-}
-
-// GetShelfByID retrieves a Shelf record by its ID
-func (s *ShelfService) GetShelfByID(id int) (*models.ShelfModel, error) {
-	var shelf models.ShelfModel
-	result := s.db.First(&shelf, id)
-	if result.Error != nil {
-		return nil, result.Error
-	}
-	return &shelf, nil
+	return shelfs, nil
 }
 
 // CreateShelf creates a new Shelf record in the database
@@ -55,8 +45,18 @@ func (s *ShelfService) UpdateShelf(id int, updatedData *models.ShelfModel) (*mod
 	return &shelf, nil
 }
 
-// DeleteShelf removes a Shelf record from the database
+// DeleteShelf deletes an Shelf record from the database
 func (s *ShelfService) DeleteShelf(id int) error {
-	result := s.db.Delete(&models.ShelfModel{}, id)
+	result := s.db.Delete(&models.ShelfModel{}, "id = ?", id)
 	return result.Error
+}
+
+// GetShelfByID retrieves a Shelf record by ID
+func (s *ShelfService) GetShelfByID (id int) (*models.ShelfModel, error) {
+	var shelf models.ShelfModel
+	result := s.db.First(&shelf, id)
+	if result.Error != nil {
+		return nil, result.Error
+	}
+	return &shelf, nil
 }
