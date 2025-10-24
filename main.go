@@ -51,6 +51,7 @@ func main() {
 	archaeologistService := services.NewArchaeologistService(db)
 	userService := services.NewUserService(db)
 	collectionService := services.NewCollectionService(db)
+	shelfService := services.NewShelfService(db)
 
 	// Routes setup
 	routes.SetupArchaeologicalSiteRoutes(router, archaeologicalsiteService)
@@ -59,6 +60,7 @@ func main() {
 	routes.SetupArchaeologistRoutes(router, archaeologistService)
 	routes.SetupUserRoutes(router, userService)
 	routes.SetupCollectionRoutes(router, collectionService)
+	routes.SetupShelfsRoutes(router, shelfService)
 
 	router.GET("/", func(c *gin.Context) {
 		c.String(200, "Hello from Gin!")
