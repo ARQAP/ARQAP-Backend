@@ -54,7 +54,7 @@ func (c *CountryController) DeleteCountry(ctx *gin.Context) {
 		ctx.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	ctx.JSON(http.StatusOK, gin.H{"message": "User deleted successfully"})
+	ctx.JSON(http.StatusOK, gin.H{"message": "Country deleted successfully"})
 }
 
 // UpdateCountry handles UPDATE requests to update a contry record by ID

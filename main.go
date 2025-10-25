@@ -3,6 +3,7 @@ package main
 import (
 	"log"
 	"os"
+	"path/filepath"
 
 	"github.com/ARQAP/ARQAP-Backend/src/db"
 	"github.com/ARQAP/ARQAP-Backend/src/models"
@@ -13,7 +14,6 @@ import (
 )
 
 func main() {
-
 	// Database connection
 	db, err := db.Connect()
 	if err != nil {
@@ -21,7 +21,22 @@ func main() {
 	}
 
 	// Auto-migrate models
-	if err := db.AutoMigrate(&models.UserModel{}, &models.ArchaeologistModel{}, &models.CountryModel{}, &models.RegionModel{}, &models.ArchaeologicalSiteModel{}, &models.ShelfModel{}, &models.PhysicalLocationModel{}, &models.ArtefactModel{}, &models.PictureModel{}, &models.HistoricalRecordModel{}); err != nil {
+	if err := db.AutoMigrate(
+		&models.UserModel{},
+		&models.ArchaeologistModel{},
+		&models.CountryModel{},
+		&models.RegionModel{},
+		&models.ArchaeologicalSiteModel{},
+		&models.PhysicalLocationModel{},
+		&models.CollectionModel{},
+		&models.ShelfModel{},
+		&models.InternalClassifierModel{},
+		&models.INPLClassifierModel{},
+		&models.INPLFicha{},
+		&models.ArtefactModel{},
+		&models.PictureModel{},
+		&models.HistoricalRecordModel{}
+	); err != nil {
 		log.Fatalf("Error during auto-migration: %v\n", err)
 	}
 
@@ -36,7 +51,6 @@ func main() {
 
 	// Logs
 	const Reset, Cyan = "\033[0m", "\033[36m"
-
 	log.Printf("%s-----------------------------------------------: %s\n", Cyan, Reset)
 	log.Printf("%sPGADMIN4 DASHBOARD: %s\n", Cyan, "http://localhost:5050")
 	log.Printf("%s-----------------------------------------------: %s\n", Cyan, Reset)
@@ -50,9 +64,20 @@ func main() {
 	regionService := services.NewRegionService(db)
 	archaeologistService := services.NewArchaeologistService(db)
 	userService := services.NewUserService(db)
+	collectionService := services.NewCollectionService(db)
 	shelfService := services.NewShelfService(db)
 	physicalLocationService := services.NewPhysicalLocationService(db)
 	artefactService := services.NewArtefactService(db)
+	internalLocationService := services.NewInternalClassifierService(db)
+
+	// INPL uploads root (from env or default)
+	inplUploadRoot := os.Getenv("INPL_UPLOAD_ROOT")
+	if inplUploadRoot == "" {
+		inplUploadRoot = filepath.Join("uploads", "inpl")
+	}
+	_ = os.MkdirAll(inplUploadRoot, 0o755)
+
+	inplClassifierService := services.NewINPLService(db, inplUploadRoot)
 
 	// Routes setup
 	routes.SetupArchaeologicalSiteRoutes(router, archaeologicalsiteService)
@@ -60,9 +85,12 @@ func main() {
 	routes.SetupRegionRoutes(router, regionService)
 	routes.SetupArchaeologistRoutes(router, archaeologistService)
 	routes.SetupUserRoutes(router, userService)
-	routes.SetupShelfRoutes(router, shelfService)
 	routes.SetupPhysicalLocationRoutes(router, physicalLocationService)
 	routes.SetupArtefactRoutes(router, artefactService)
+	routes.SetupCollectionRoutes(router, collectionService)
+	routes.SetupShelfsRoutes(router, shelfService)
+	routes.SetupInternalClassifiersRoutes(router, internalLocationService)
+	routes.SetupINPLClassifiersRoutes(router, inplClassifierService)
 
 	// Test route
 	router.GET("/", func(c *gin.Context) {
@@ -75,5 +103,4 @@ func main() {
 	}
 
 	log.Printf("Server is running on %s\n", host)
-
 }

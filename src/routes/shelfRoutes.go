@@ -7,14 +7,14 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func SetupShelfRoutes(router *gin.Engine, service *services.ShelfService) {
+func SetupShelfsRoutes(router *gin.Engine, service *services.ShelfService) {
 	shelfController := controllers.NewShelfController(service)
 
 	// Protected routes
-	shelf := router.Group("/shelves")
+	shelf := router.Group("/shelfs")
 	shelf.Use(middleware.AuthMiddleware())
 	{
-		shelf.GET("/", shelfController.GetAllShelves)
+		shelf.GET("/", shelfController.GetAllShelfs)
 		shelf.GET("/:id", shelfController.GetShelfByID)
 		shelf.POST("/", shelfController.CreateShelf)
 		shelf.PUT("/:id", shelfController.UpdateShelf)
