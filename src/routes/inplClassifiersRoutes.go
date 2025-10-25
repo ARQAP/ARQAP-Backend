@@ -28,5 +28,6 @@ func SetupINPLClassifiersRoutes(router *gin.Engine, service *services.INPLServic
 	{
 		inplFichas.PUT("/:id", inplController.ReplaceFicha)
 		inplFichas.DELETE("/:id", inplController.DeleteFicha)
+		inplFichas.GET("/:id/download", inplController.DownloadFicha)
 	}
 }

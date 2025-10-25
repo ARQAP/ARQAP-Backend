@@ -18,7 +18,50 @@ func NewINPLClassifierController(service *services.INPLService) *INPLClassifierC
 	return &INPLClassifierController{service: service}
 }
 
-// GetAllINPLClassifiers handles GET requests to retrieve all INPLClassifier records (optionally with photos via ?preload=true)
+// FichaDTO is the data transfer object for INPLFicha
+type FichaDTO struct {
+	ID               int    `json:"id"`
+	INPLClassifierID int    `json:"inplClassifierId"`
+	Filename         string `json:"filename"`
+	ContentType      string `json:"contentType"`
+	Size             int64  `json:"size"`
+	URL              string `json:"url"`
+}
+
+// INPLClassifierDTO is the data transfer object for INPLClassifierModel
+type INPLClassifierDTO struct {
+	ID         int        `json:"id"`
+	INPLFichas []FichaDTO `json:"inplFichas"`
+}
+
+// toDTO converts an INPLClassifierModel to INPLClassifierDTO
+func (c *INPLClassifierController) toDTO(ctx *gin.Context, m *models.INPLClassifierModel) INPLClassifierDTO {
+	out := INPLClassifierDTO{ID: m.ID}
+	out.INPLFichas = make([]FichaDTO, 0, len(m.INPLFichas))
+	base := baseURL(ctx)
+	for _, f := range m.INPLFichas {
+		out.INPLFichas = append(out.INPLFichas, FichaDTO{
+			ID:               f.ID,
+			INPLClassifierID: f.INPLClassifierID,
+			Filename:         f.Filename,
+			ContentType:      f.ContentType,
+			Size:             f.Size,
+			URL:              base + "/inplFichas/" + strconv.Itoa(f.ID) + "/download",
+		})
+	}
+	return out
+}
+
+// baseURL constructs the base URL from the request context
+func baseURL(ctx *gin.Context) string {
+	scheme := "http"
+	if ctx.Request.TLS != nil || ctx.Request.Header.Get("X-Forwarded-Proto") == "https" {
+		scheme = "https"
+	}
+	return scheme + "://" + ctx.Request.Host
+}
+
+// GetAllINPLClassifiers retrieves all INPLClassifiers
 func (c *INPLClassifierController) GetAllINPLClassifiers(ctx *gin.Context) {
 	preload := ctx.DefaultQuery("preload", "false") == "true"
 	classifiers, err := c.service.GetAllClassifiers(preload)
@@ -26,10 +69,18 @@ func (c *INPLClassifierController) GetAllINPLClassifiers(ctx *gin.Context) {
 		ctx.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	ctx.JSON(http.StatusOK, classifiers)
+	if !preload {
+		ctx.JSON(http.StatusOK, classifiers)
+		return
+	}
+	dtos := make([]INPLClassifierDTO, 0, len(classifiers))
+	for i := range classifiers {
+		dtos = append(dtos, c.toDTO(ctx, &classifiers[i]))
+	}
+	ctx.JSON(http.StatusOK, dtos)
 }
 
-// CreateINPLClassifier handles POST requests (multipart) to create a new INPLClassifier with N photos (fichas[] files)
+// CreateINPLClassifier creates a new INPLClassifier
 func (c *INPLClassifierController) CreateINPLClassifier(ctx *gin.Context) {
 	form, err := ctx.MultipartForm()
 	if err != nil {
@@ -62,15 +113,20 @@ func (c *INPLClassifierController) CreateINPLClassifier(ctx *gin.Context) {
 	}
 	defer closeAll(closers)
 
-	classifier, fichas, err := c.service.CreateClassifierWithFichas(uploads)
+	classifier, _, err := c.service.CreateClassifierWithFichas(uploads)
 	if err != nil {
 		ctx.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	ctx.JSON(http.StatusCreated, gin.H{"classifier": classifier, "fichas": fichas})
+	reloaded, err := c.service.GetClassifierByID(classifier.ID)
+	if err != nil {
+		ctx.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	ctx.JSON(http.StatusCreated, c.toDTO(ctx, reloaded))
 }
 
-// DeleteINPLClassifier handles DELETE requests to delete an INPLClassifier by ID (and its photos)
+// UpdateINPLClassifier updates an existing INPLClassifier
 func (c *INPLClassifierController) DeleteINPLClassifier(ctx *gin.Context) {
 	idParam := ctx.Param("id")
 	id, err := strconv.Atoi(idParam)
@@ -85,7 +141,7 @@ func (c *INPLClassifierController) DeleteINPLClassifier(ctx *gin.Context) {
 	ctx.JSON(http.StatusOK, gin.H{"message": "INPLClassifier deleted successfully"})
 }
 
-// UpdateINPLClassifier handles UPDATE requests to update an INPLClassifier by ID (placeholder if no fields exist)
+// UpdateINPLClassifier updates an existing INPLClassifier
 func (c *INPLClassifierController) UpdateINPLClassifier(ctx *gin.Context) {
 	idParam := ctx.Param("id")
 	id, err := strconv.Atoi(idParam)
@@ -93,7 +149,6 @@ func (c *INPLClassifierController) UpdateINPLClassifier(ctx *gin.Context) {
 		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Invalid INPLClassifier ID"})
 		return
 	}
-	// If someday the classifier has fields, bind them here.
 	var body models.INPLClassifierModel
 	_ = ctx.ShouldBindJSON(&body)
 
@@ -105,7 +160,7 @@ func (c *INPLClassifierController) UpdateINPLClassifier(ctx *gin.Context) {
 	ctx.JSON(http.StatusOK, updated)
 }
 
-// GetINPLClassifierByID handles GET requests to retrieve a single INPLClassifier by ID (with photos)
+// GetINPLClassifierByID retrieves an INPLClassifier by its ID
 func (c *INPLClassifierController) GetINPLClassifierByID(ctx *gin.Context) {
 	idParam := ctx.Param("id")
 	id, err := strconv.Atoi(idParam)
@@ -118,10 +173,10 @@ func (c *INPLClassifierController) GetINPLClassifierByID(ctx *gin.Context) {
 		ctx.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	ctx.JSON(http.StatusOK, classifier)
+	ctx.JSON(http.StatusOK, c.toDTO(ctx, classifier))
 }
 
-// AddFichasToINPLClassifier handles POST (multipart) to attach N photos to an existing classifier
+// ListFichasByINPLClassifier lists all fichas associated with a given INPLClassifier
 func (c *INPLClassifierController) AddFichasToINPLClassifier(ctx *gin.Context) {
 	idParam := ctx.Param("id")
 	classifierID, err := strconv.Atoi(idParam)
@@ -160,15 +215,19 @@ func (c *INPLClassifierController) AddFichasToINPLClassifier(ctx *gin.Context) {
 	}
 	defer closeAll(closers)
 
-	created, err := c.service.AddFichasToClassifier(classifierID, uploads)
+	if _, err := c.service.AddFichasToClassifier(classifierID, uploads); err != nil {
+		ctx.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	reloaded, err := c.service.GetClassifierByID(classifierID)
 	if err != nil {
 		ctx.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	ctx.JSON(http.StatusCreated, gin.H{"fichas": created})
+	ctx.JSON(http.StatusCreated, c.toDTO(ctx, reloaded))
 }
 
-// ListFichasByINPLClassifier handles GET requests to list all photos by INPLClassifier ID
+// ListFichasByINPLClassifier lists all fichas associated with a given INPLClassifier
 func (c *INPLClassifierController) ListFichasByINPLClassifier(ctx *gin.Context) {
 	idParam := ctx.Param("id")
 	classifierID, err := strconv.Atoi(idParam)
@@ -184,7 +243,7 @@ func (c *INPLClassifierController) ListFichasByINPLClassifier(ctx *gin.Context) 
 	ctx.JSON(http.StatusOK, list)
 }
 
-// ReplaceFicha handles PUT (multipart) to replace a single photo by ficha ID
+// ReplaceFicha replaces an existing ficha with a new uploaded file
 func (c *INPLClassifierController) ReplaceFicha(ctx *gin.Context) {
 	idParam := ctx.Param("id")
 	fichaID, err := strconv.Atoi(idParam)
@@ -218,7 +277,7 @@ func (c *INPLClassifierController) ReplaceFicha(ctx *gin.Context) {
 	ctx.JSON(http.StatusOK, updated)
 }
 
-// DeleteFicha handles DELETE requests to remove a single photo by ficha ID
+// DeleteFicha deletes an INPLFicha by its ID
 func (c *INPLClassifierController) DeleteFicha(ctx *gin.Context) {
 	idParam := ctx.Param("id")
 	fichaID, err := strconv.Atoi(idParam)
@@ -233,8 +292,25 @@ func (c *INPLClassifierController) DeleteFicha(ctx *gin.Context) {
 	ctx.JSON(http.StatusOK, gin.H{"message": "Photo deleted successfully"})
 }
 
-// helpers
+// DownloadFicha serves the file associated with the given ficha ID
+func (c *INPLClassifierController) DownloadFicha(ctx *gin.Context) {
+	idParam := ctx.Param("id")
+	fichaID, err := strconv.Atoi(idParam)
+	if err != nil {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		return
+	}
+	f, err := c.service.GetFichaByID(fichaID)
+	if err != nil {
+		ctx.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+		return
+	}
+	ctx.Header("Content-Disposition", `inline; filename="`+f.Filename+`"`)
+	ctx.Header("Content-Type", f.ContentType)
+	ctx.File(f.FilePath)
+}
 
+// closeAll closes all provided ReadClosers
 func closeAll(rr []io.ReadCloser) {
 	for _, r := range rr {
 		_ = r.Close()

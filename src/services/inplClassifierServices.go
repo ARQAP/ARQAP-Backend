@@ -26,11 +26,12 @@ type INPLService struct {
 	uploadRoot string
 }
 
+// NewINPLService creates a new INPLService instance
 func NewINPLService(db *gorm.DB, uploadRoot string) *INPLService {
 	return &INPLService{db: db, uploadRoot: uploadRoot}
 }
 
-// CreateClassifierWithFichas creates the classifier (no fields) + N photos in a single transaction.
+// CreateClassifierWithFichas creates a new INPLClassifier with associated fichas (photos)
 func (s *INPLService) CreateClassifierWithFichas(files []FichaUpload) (*models.INPLClassifierModel, []models.INPLFicha, error) {
 	if len(files) == 0 {
 		return nil, nil, errors.New("at least one photo is required")
@@ -49,14 +50,12 @@ func (s *INPLService) CreateClassifierWithFichas(files []FichaUpload) (*models.I
 		return nil, nil, err
 	}
 
-	// 1) create empty classifier
 	cls := &models.INPLClassifierModel{}
 	if err := tx.Create(cls).Error; err != nil {
 		tx.Rollback()
 		return nil, nil, err
 	}
 
-	// 2) create folder per classifier
 	dir := filepath.Join(s.uploadRoot, strconv.Itoa(cls.ID))
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		tx.Rollback()
@@ -100,13 +99,13 @@ func (s *INPLService) CreateClassifierWithFichas(files []FichaUpload) (*models.I
 	return cls, fichas, nil
 }
 
-// isAllowedImageType checks whether the content-type is one of the allowed image types.
+// isAllowedImageType checks if the content type is one of the allowed image types
 func isAllowedImageType(ct string) bool {
 	ct = strings.ToLower(ct)
 	return ct == "image/jpeg" || ct == "image/jpg" || ct == "image/png" || ct == "image/webp"
 }
 
-// sanitizeFilename removes dangerous characters from the filename.
+// sanitizeFilename removes potentially dangerous characters from filenames
 func sanitizeFilename(name string) string {
 	name = strings.TrimSpace(name)
 	name = strings.ReplaceAll(name, "..", "")
@@ -122,7 +121,7 @@ func sanitizeFilename(name string) string {
 	return name
 }
 
-// buildSafeFilename generates a safe filename, appending an index if necessary.
+// buildSafeFilename creates a safe filename, appending an index if needed
 func buildSafeFilename(original string, idx int) string {
 	base := sanitizeFilename(original)
 	if base == "" {
@@ -137,7 +136,7 @@ func buildSafeFilename(original string, idx int) string {
 	return base
 }
 
-// saveToFile writes the contents of r to the given path.
+// saveToFile saves the content from the reader to the specified path
 func saveToFile(path string, r io.Reader) error {
 	f, err := os.Create(path)
 	if err != nil {
@@ -148,14 +147,14 @@ func saveToFile(path string, r io.Reader) error {
 	return err
 }
 
-// cleanupFiles deletes the files at the provided paths (best-effort).
+// cleanupFiles removes files at the given paths
 func cleanupFiles(paths []string) {
 	for _, p := range paths {
 		_ = os.Remove(p)
 	}
 }
 
-// AddFichasToClassifier adds N photos to an existing classifier.
+// AddFichasToClassifier adds multiple fichas to an existing INPLClassifier
 func (s *INPLService) AddFichasToClassifier(classifierID int, files []FichaUpload) ([]models.INPLFicha, error) {
 	if len(files) == 0 {
 		return nil, errors.New("no files provided")
@@ -225,7 +224,7 @@ func (s *INPLService) AddFichasToClassifier(classifierID int, files []FichaUploa
 	return out, nil
 }
 
-// DeleteFicha removes a single photo both from the DB and from storage.
+// DeleteFicha deletes an INPLFicha by its ID and removes the associated file
 func (s *INPLService) DeleteFicha(fichaID int) error {
 	var f models.INPLFicha
 	if err := s.db.First(&f, fichaID).Error; err != nil {
@@ -238,7 +237,7 @@ func (s *INPLService) DeleteFicha(fichaID int) error {
 	return nil
 }
 
-// GetClassifierByID fetches a classifier by ID, including its photos.
+// GetClassifierByID retrieves an INPLClassifier by its ID, including its fichas
 func (s *INPLService) GetClassifierByID(id int) (*models.INPLClassifierModel, error) {
 	var classifier models.INPLClassifierModel
 	result := s.db.Preload("INPLFichas").First(&classifier, id)
@@ -248,7 +247,7 @@ func (s *INPLService) GetClassifierByID(id int) (*models.INPLClassifierModel, er
 	return &classifier, nil
 }
 
-// GetAllClassifiers fetches all classifiers, optionally including their photos.
+// GetAllClassifiers retrieves all INPLClassifiers, optionally preloading their fichas
 func (s *INPLService) GetAllClassifiers(preload bool) ([]models.INPLClassifierModel, error) {
 	var list []models.INPLClassifierModel
 	q := s.db
@@ -261,7 +260,7 @@ func (s *INPLService) GetAllClassifiers(preload bool) ([]models.INPLClassifierMo
 	return list, nil
 }
 
-// UpdateClassifier updates an existing INPLClassifier record.
+// UpdateClassifier updates an existing INPLClassifier's details
 func (s *INPLService) UpdateClassifier(id int, updatedClassifier *models.INPLClassifierModel) (*models.INPLClassifierModel, error) {
 	var classifier models.INPLClassifierModel
 	result := s.db.First(&classifier, id)
@@ -273,7 +272,7 @@ func (s *INPLService) UpdateClassifier(id int, updatedClassifier *models.INPLCla
 	return &classifier, nil
 }
 
-// ListFichasByClassifier lists the photos associated with a given classifier.
+// ListFichasByClassifier lists all INPLFichas associated with a given INPLClassifier
 func (s *INPLService) ListFichasByClassifier(classifierID int) ([]models.INPLFicha, error) {
 	var fichas []models.INPLFicha
 	if err := s.db.Where("inpl_classifier_id = ?", classifierID).Find(&fichas).Error; err != nil {
@@ -282,7 +281,7 @@ func (s *INPLService) ListFichasByClassifier(classifierID int) ([]models.INPLFic
 	return fichas, nil
 }
 
-// DeleteClassifier removes a classifier and its associated photos, from both DB and storage.
+// DeleteClassifier deletes an INPLClassifier and all its associated fichas and files
 func (s *INPLService) DeleteClassifier(id int) error {
 	var fichas []models.INPLFicha
 	if err := s.db.Where("inpl_classifier_id = ?", id).Find(&fichas).Error; err != nil {
@@ -303,7 +302,7 @@ func (s *INPLService) DeleteClassifier(id int) error {
 	return nil
 }
 
-// ReplaceFicha replaces the file of an existing photo record.
+// ReplaceFicha replaces the file of an existing INPLFicha
 func (s *INPLService) ReplaceFicha(fichaID int, file FichaUpload) (*models.INPLFicha, error) {
 	if file.Reader == nil || file.Size <= 0 {
 		return nil, errors.New("invalid file")
@@ -341,6 +340,15 @@ func (s *INPLService) ReplaceFicha(fichaID int, file FichaUpload) (*models.INPLF
 	_ = os.Remove(f.FilePath)
 
 	if err := s.db.First(&f, fichaID).Error; err != nil {
+		return nil, err
+	}
+	return &f, nil
+}
+
+// GetFichaByID retrieves an INPLFicha by its ID
+func (s *INPLService) GetFichaByID(id int) (*models.INPLFicha, error) {
+	var f models.INPLFicha
+	if err := s.db.First(&f, id).Error; err != nil {
 		return nil, err
 	}
 	return &f, nil
