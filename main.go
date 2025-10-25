@@ -28,7 +28,8 @@ func main() {
 		&models.ArchaeologicalSiteModel{}, 
 		&models.PhysicalLocationModel{}, 
 		&models.CollectionModel{},
-		&models.ShelfModel{}); err != nil {
+		&models.ShelfModel{},
+		&models.InternalClassifierModel{}); err != nil {
 		log.Fatalf("Error during auto-migration: %v\n", err)
 	}
 
@@ -60,6 +61,7 @@ func main() {
 	collectionService := services.NewCollectionService(db)
 	shelfService := services.NewShelfService(db)
 	physicalLocationService := services.NewPhysicalLocationService(db)
+	internalLocationService := services.NewInternalClassifierService(db)
 
 	// Routes setup
 	routes.SetupArchaeologicalSiteRoutes(router, archaeologicalsiteService)
@@ -70,6 +72,7 @@ func main() {
 	routes.SetupPhysicalLocationRoutes(router, physicalLocationService)
 	routes.SetupCollectionRoutes(router, collectionService)
 	routes.SetupShelfsRoutes(router, shelfService)
+	routes.SetupInternalClassifiersRoutes(router, internalLocationService)
 
 	// Test route
 	router.GET("/", func(c *gin.Context) {

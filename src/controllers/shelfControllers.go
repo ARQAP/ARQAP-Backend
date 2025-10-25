@@ -58,7 +58,7 @@ func (c *ShelfController) DeleteShelf(ctx *gin.Context) {
 		ctx.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	ctx.JSON(http.StatusOK, gin.H{"message": "User deleted successfully"})
+	ctx.JSON(http.StatusOK, gin.H{"message": "Shelf deleted successfully"})
 }
 
 // UpdateShelf handles UPDATE requests to update a contry record by ID
