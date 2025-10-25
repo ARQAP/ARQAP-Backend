@@ -36,6 +36,7 @@ func main() {
 		&models.ArtefactModel{},
 		&models.PictureModel{},
 		&models.HistoricalRecordModel{},
+		&models.MentionModel{},
 	); err != nil {
 		log.Fatalf("Error during auto-migration: %v\n", err)
 	}
@@ -69,6 +70,7 @@ func main() {
 	physicalLocationService := services.NewPhysicalLocationService(db)
 	artefactService := services.NewArtefactService(db)
 	internalLocationService := services.NewInternalClassifierService(db)
+	mentionService := services.NewMentionService(db)
 
 	// INPL uploads root (from env or default)
 	inplUploadRoot := os.Getenv("INPL_UPLOAD_ROOT")
@@ -91,6 +93,7 @@ func main() {
 	routes.SetupShelfsRoutes(router, shelfService)
 	routes.SetupInternalClassifiersRoutes(router, internalLocationService)
 	routes.SetupINPLClassifiersRoutes(router, inplClassifierService)
+	routes.SetupMentionRoutes(router, mentionService)
 
 	// Test route
 	router.GET("/", func(c *gin.Context) {
