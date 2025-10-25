@@ -35,7 +35,7 @@ func main() {
 		&models.INPLFicha{},
 		&models.ArtefactModel{},
 		&models.PictureModel{},
-		&models.HistoricalRecordModel{}
+		&models.HistoricalRecordModel{},
 	); err != nil {
 		log.Fatalf("Error during auto-migration: %v\n", err)
 	}

@@ -99,8 +99,7 @@ func (s *ArtefactService) GetAllArtefacts() ([]models.ArtefactModel, error) {
 
 	// If not in cache, query DB
 	var artefacts []models.ArtefactModel
-	// TODO: Completar relaciones de otras clases para que vuelva con toda la información asociada
-	err := s.db.Preload("Picture").Preload("HistoricalRecord").Preload("Archaeologist").Preload("ArchaeologicalSite").Preload("PhysicalLocation").Find(&artefacts).Error
+	err := s.db.Preload("Picture").Preload("HistoricalRecord").Preload("Archaeologist").Preload("ArchaeologicalSite").Preload("PhysicalLocation").Preload("Collection").Preload("InplClassifier").Preload("InternalClassifier").Find(&artefacts).Error
 
 	if err == nil {
 		// Save to cache for 5 minutes
@@ -122,8 +121,7 @@ func (s *ArtefactService) GetArtefactByID(id int) (*models.ArtefactModel, error)
 	// If not in cache, query DB
 	var artefact models.ArtefactModel
 
-	// TODO: Completar relaciones de otras clases para que vuelva con toda la información asociada
-	err := s.db.Preload("Picture").Preload("HistoricalRecord").Preload("Archaeologist").Preload("ArchaeologicalSite").Preload("PhysicalLocation").First(&artefact, id).Error
+	err := s.db.Preload("Picture").Preload("HistoricalRecord").Preload("Archaeologist").Preload("ArchaeologicalSite").Preload("PhysicalLocation").Preload("Collection").Preload("InplClassifier").Preload("InternalClassifier").First(&artefact, id).Error
 	if err != nil {
 		return nil, err
 	}
