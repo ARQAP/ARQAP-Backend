@@ -3,6 +3,7 @@ package main
 import (
 	"log"
 	"os"
+	"path/filepath"
 
 	"github.com/ARQAP/ARQAP-Backend/src/db"
 	"github.com/ARQAP/ARQAP-Backend/src/models"
@@ -13,7 +14,6 @@ import (
 )
 
 func main() {
-
 	// Database connection
 	db, err := db.Connect()
 	if err != nil {
@@ -21,15 +21,19 @@ func main() {
 	}
 
 	// Auto-migrate models
-	if err := db.AutoMigrate(&models.UserModel{}, 
-		&models.ArchaeologistModel{}, 
-		&models.CountryModel{}, 
-		&models.RegionModel{}, 
-		&models.ArchaeologicalSiteModel{}, 
-		&models.PhysicalLocationModel{}, 
+	if err := db.AutoMigrate(
+		&models.UserModel{},
+		&models.ArchaeologistModel{},
+		&models.CountryModel{},
+		&models.RegionModel{},
+		&models.ArchaeologicalSiteModel{},
+		&models.PhysicalLocationModel{},
 		&models.CollectionModel{},
 		&models.ShelfModel{},
-		&models.InternalClassifierModel{}); err != nil {
+		&models.InternalClassifierModel{},
+		&models.INPLClassifierModel{},
+		&models.INPLFicha{}, // ensure photos table exists
+	); err != nil {
 		log.Fatalf("Error during auto-migration: %v\n", err)
 	}
 
@@ -44,7 +48,6 @@ func main() {
 
 	// Logs
 	const Reset, Cyan = "\033[0m", "\033[36m"
-
 	log.Printf("%s-----------------------------------------------: %s\n", Cyan, Reset)
 	log.Printf("%sPGADMIN4 DASHBOARD: %s\n", Cyan, "http://localhost:5050")
 	log.Printf("%s-----------------------------------------------: %s\n", Cyan, Reset)
@@ -63,6 +66,15 @@ func main() {
 	physicalLocationService := services.NewPhysicalLocationService(db)
 	internalLocationService := services.NewInternalClassifierService(db)
 
+	// INPL uploads root (from env or default)
+	inplUploadRoot := os.Getenv("INPL_UPLOAD_ROOT")
+	if inplUploadRoot == "" {
+		inplUploadRoot = filepath.Join("uploads", "inpl")
+	}
+	_ = os.MkdirAll(inplUploadRoot, 0o755)
+
+	inplClassifierService := services.NewINPLService(db, inplUploadRoot)
+
 	// Routes setup
 	routes.SetupArchaeologicalSiteRoutes(router, archaeologicalsiteService)
 	routes.SetupCountriesRoutes(router, countryService)
@@ -73,6 +85,7 @@ func main() {
 	routes.SetupCollectionRoutes(router, collectionService)
 	routes.SetupShelfsRoutes(router, shelfService)
 	routes.SetupInternalClassifiersRoutes(router, internalLocationService)
+	routes.SetupINPLClassifiersRoutes(router, inplClassifierService)
 
 	// Test route
 	router.GET("/", func(c *gin.Context) {
@@ -85,5 +98,4 @@ func main() {
 	}
 
 	log.Printf("Server is running on %s\n", host)
-
 }
