@@ -29,21 +29,21 @@ func (c *UserController) GetAllUsers(ctx *gin.Context) {
 
 // CreateUser handles POST requests to create a new user record
 func (c *UserController) CreateUser(ctx *gin.Context) {
-    var user models.UserModel
-    if err := ctx.ShouldBindJSON(&user); err != nil {
-        ctx.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-        return
-    }
-    createdUser, err := c.service.CreateUser(&user)
+	var user models.UserModel
+	if err := ctx.ShouldBindJSON(&user); err != nil {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	createdUser, err := c.service.CreateUser(&user)
 	response := models.RegisterResponse{
 		ID:       createdUser.Id,
 		Username: createdUser.Username,
 	}
-    if err != nil {
-        ctx.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-        return
-    }
-    ctx.JSON(http.StatusCreated, response)
+	if err != nil {
+		ctx.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	ctx.JSON(http.StatusCreated, response)
 }
 
 // DeleteUser handles DELETE requests to delete a user record by ID

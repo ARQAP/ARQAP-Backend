@@ -10,11 +10,11 @@ import (
 )
 
 type ArchaeologistController struct {
-    service *services.ArchaeologistService
+	service *services.ArchaeologistService
 }
 
 func NewArchaeologistController(service *services.ArchaeologistService) *ArchaeologistController {
-    return &ArchaeologistController{service: service}
+	return &ArchaeologistController{service: service}
 }
 
 // GetArchaeologists handles GET requests to retrieve all archaeologist records

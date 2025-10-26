@@ -9,11 +9,18 @@ import (
 
 func SetupCORS() gin.HandlerFunc {
 	return cors.New(cors.Config{
-		AllowOrigins:     []string{"http://localhost:19000", "http://localhost:19001", "http://localhost:19002", "http://localhost:19003", "http://localhost:19004", "http://localhost:19005", "http://localhost:19006", "http://localhost:8081"},
+		AllowOrigins: []string{
+			"http://localhost:8081",
+			"http://127.0.0.1:8081",
+			// tus puertos de Expo dev si aplica (19000–19006)
+			"http://localhost:19000", "http://localhost:19001",
+			"http://localhost:19002", "http://localhost:19003",
+			"http://localhost:19004", "http://localhost:19005", "http://localhost:19006",
+		},
 		AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
 		AllowHeaders:     []string{"Origin", "Content-Type", "Accept", "Authorization"},
 		ExposeHeaders:    []string{"Content-Length"},
-		AllowCredentials: true,
+		AllowCredentials: false, // ← si no usás cookies, mejor false
 		MaxAge:           12 * time.Hour,
 	})
 }

@@ -14,8 +14,8 @@ func SetupArchaeologistRoutes(router *gin.Engine, service *services.Archaeologis
 	archaeologist := router.Group("/archaeologists")
 	archaeologist.Use(middleware.AuthMiddleware())
 	{
-		archaeologist.GET("/", archaeologistController.GetArchaeologists)
-		archaeologist.POST("/", archaeologistController.CreateArchaeologist)
+		archaeologist.GET("", archaeologistController.GetArchaeologists)
+		archaeologist.POST("", archaeologistController.CreateArchaeologist)
 		archaeologist.PUT("/:id", archaeologistController.UpdateArchaeologist)
 		archaeologist.DELETE("/:id", archaeologistController.DeleteArchaeologist)
 	}

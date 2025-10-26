@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 
 	"github.com/ARQAP/ARQAP-Backend/src/db"
+	"github.com/ARQAP/ARQAP-Backend/src/middleware"
 	"github.com/ARQAP/ARQAP-Backend/src/models"
 	"github.com/ARQAP/ARQAP-Backend/src/routes"
 	"github.com/ARQAP/ARQAP-Backend/src/seed"
@@ -60,6 +61,7 @@ func main() {
 
 	// Gin router setup
 	router := gin.Default()
+	router.Use(middleware.SetupCORS())
 
 	// Services setup
 	archaeologicalsiteService := services.NewArchaeologicalSiteService(db)
