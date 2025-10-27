@@ -61,6 +61,10 @@ func main() {
 
 	// Gin router setup
 	router := gin.Default()
+
+	router.RedirectTrailingSlash = false
+	router.HandleMethodNotAllowed = true
+
 	router.Use(middleware.SetupCORS())
 
 	// Services setup

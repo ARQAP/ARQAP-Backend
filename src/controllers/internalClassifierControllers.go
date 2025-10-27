@@ -9,10 +9,6 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-type internalClassifierController struct {
-	service *services.InternalClassifierService
-}
-
 type InternalClassifierController struct {
 	service *services.InternalClassifierService
 }
@@ -33,17 +29,17 @@ func (c *InternalClassifierController) GetAllInternalClassifiers(ctx *gin.Contex
 
 // CreateInternalClassifier handles POST requests to create a new internalClassifier record
 func (c *InternalClassifierController) CreateInternalClassifier(ctx *gin.Context) {
-    var internalClassifier models.InternalClassifierModel
-    if err := ctx.ShouldBindJSON(&internalClassifier); err != nil {
-        ctx.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-        return
-    }
-    createdInternalClassifier, err := c.service.CreateInternalClassifier(&internalClassifier)
-    if err != nil {
-        ctx.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-        return
-    }
-    ctx.JSON(http.StatusCreated, createdInternalClassifier)
+	var internalClassifier models.InternalClassifierModel
+	if err := ctx.ShouldBindJSON(&internalClassifier); err != nil {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	createdInternalClassifier, err := c.service.CreateInternalClassifier(&internalClassifier)
+	if err != nil {
+		ctx.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	ctx.JSON(http.StatusCreated, createdInternalClassifier)
 }
 
 // DeleteInternalClassifier handles DELETE requests to delete a internalClassifier record by ID
@@ -83,7 +79,7 @@ func (c *InternalClassifierController) UpdateInternalClassifier(ctx *gin.Context
 }
 
 // GetInternalClassifierByID handles GET request to retrive a internalClassifier record by ID
-func (c *InternalClassifierController) GetInternalClassifierByID(ctx *gin.Context){
+func (c *InternalClassifierController) GetInternalClassifierByID(ctx *gin.Context) {
 	idParam := ctx.Param("id")
 	id, err := strconv.Atoi(idParam)
 	if err != nil {

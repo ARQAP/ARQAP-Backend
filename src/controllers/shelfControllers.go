@@ -9,10 +9,6 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-type shelfController struct {
-	service *services.ShelfService
-}
-
 type ShelfController struct {
 	service *services.ShelfService
 }
@@ -33,17 +29,17 @@ func (c *ShelfController) GetAllShelfs(ctx *gin.Context) {
 
 // CreateShelf handles POST requests to create a new shelf record
 func (c *ShelfController) CreateShelf(ctx *gin.Context) {
-    var shelf models.ShelfModel
-    if err := ctx.ShouldBindJSON(&shelf); err != nil {
-        ctx.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-        return
-    }
-    createdShelf, err := c.service.CreateShelf(&shelf)
-    if err != nil {
-        ctx.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-        return
-    }
-    ctx.JSON(http.StatusCreated, createdShelf)
+	var shelf models.ShelfModel
+	if err := ctx.ShouldBindJSON(&shelf); err != nil {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	createdShelf, err := c.service.CreateShelf(&shelf)
+	if err != nil {
+		ctx.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	ctx.JSON(http.StatusCreated, createdShelf)
 }
 
 // DeleteShelf handles DELETE requests to delete a shelf record by ID
@@ -83,7 +79,7 @@ func (c *ShelfController) UpdateShelf(ctx *gin.Context) {
 }
 
 // GetShelfByID handles GET request to retrive a shelf record by ID
-func (c *ShelfController) GetShelfByID(ctx *gin.Context){
+func (c *ShelfController) GetShelfByID(ctx *gin.Context) {
 	idParam := ctx.Param("id")
 	id, err := strconv.Atoi(idParam)
 	if err != nil {
