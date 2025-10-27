@@ -1,6 +1,7 @@
 package services
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"sync"
@@ -184,23 +185,22 @@ func (s *ArtefactService) DeleteArtefact(id int) error {
 
 func (s *ArtefactService) GetPictureByArtefactID(artefactID int) (*models.PictureModel, error) {
 	cacheKey := fmt.Sprintf("picture_%d", artefactID)
-
-	// Try to get from cache
 	if cached, found := s.getCache(cacheKey); found {
-		picture := cached.(models.PictureModel)
-		return &picture, nil
+		pic := cached.(models.PictureModel)
+		return &pic, nil
 	}
 
-	// If not in cache, query DB
 	var picture models.PictureModel
 	err := s.db.Where("artefact_id = ?", artefactID).First(&picture).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		// caso normal: aún no hay foto
+		return nil, nil
+	}
 	if err != nil {
 		return nil, err
 	}
 
-	// Save to cache for 30 minutes
 	s.setCache(cacheKey, picture, 30*time.Minute)
-
 	return &picture, nil
 }
 
@@ -227,27 +227,38 @@ func (s *ArtefactService) GetHistoricalRecordByArtefactID(artefactID int) (*mode
 }
 
 func (s *ArtefactService) SavePicture(picture *models.PictureModel) error {
-	// Check if a picture already exists for this artefact
 	var existing models.PictureModel
-	if err := s.db.Where("artefact_id = ?", picture.ArtefactID).First(&existing).Error; err == nil {
-		// Already exists, delete previous file
-		os.Remove(existing.FilePath)
-		// Update existing record
-		if err := s.db.Where("artefact_id = ?", picture.ArtefactID).Updates(picture).Error; err != nil {
+	err := s.db.Where("artefact_id = ?", picture.ArtefactID).First(&existing).Error
+
+	switch {
+	case errors.Is(err, gorm.ErrRecordNotFound):
+		// no había foto: crear
+		if err := s.db.Create(picture).Error; err != nil {
 			return err
 		}
-	} else {
-		// Does not exist, create new
-		if err := s.db.Create(picture).Error; err != nil {
+	case err != nil:
+		// error real de DB
+		return err
+	default:
+		// había foto: borrar archivo viejo y actualizar registro
+		if existing.FilePath != "" {
+			_ = os.Remove(existing.FilePath)
+		}
+		// aseguramos update sobre el registro existente
+		picture.ID = existing.ID
+		if err := s.db.Model(&existing).Updates(map[string]interface{}{
+			"file_path":   picture.FilePath,
+			"contentType": picture.ContentType,
+			"size":        picture.Size,
+			"updated_at":  time.Now(),
+		}).Error; err != nil {
 			return err
 		}
 	}
 
-	// Invalidate related cache
 	s.invalidateCache(fmt.Sprintf("picture_%d", picture.ArtefactID))
 	s.invalidateCache(fmt.Sprintf("artefact_%d", picture.ArtefactID))
 	s.invalidateCache("all_artefacts")
-
 	return nil
 }
 

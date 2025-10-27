@@ -67,6 +67,8 @@ func main() {
 
 	router.Use(middleware.SetupCORS())
 
+	router.Static("/uploads", "./uploads")
+
 	// Services setup
 	archaeologicalsiteService := services.NewArchaeologicalSiteService(db)
 	countryService := services.NewCountryService(db)
