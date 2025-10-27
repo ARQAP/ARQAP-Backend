@@ -27,6 +27,22 @@ func (c *MentionController) GetMentions(ctx *gin.Context) {
 	ctx.JSON(http.StatusOK, mentions)
 }
 
+// GetMentionsByArtefactID handles GET requests to retrieve mentions by artefact ID
+func (c *MentionController) GetMentionsByArtefactID(ctx *gin.Context) {
+	idParam := ctx.Param("id")
+	id, err := strconv.Atoi(idParam)
+	if err != nil {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": "invalid artefact id"})
+		return
+	}
+	mentions, err := c.service.GetMentionsByArtefactID(id)
+	if err != nil {
+		ctx.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	ctx.JSON(http.StatusOK, mentions)
+}
+
 // GetMentionByID handles GET requests to retrieve a mention by its ID
 func (c *MentionController) GetMentionByID(ctx *gin.Context) {
 	idParam := ctx.Param("id")

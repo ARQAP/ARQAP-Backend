@@ -6,7 +6,7 @@ import (
 )
 
 type MentionService struct {
-    db *gorm.DB
+	db *gorm.DB
 }
 
 // NewMentionService creates a new instance of MentionService
@@ -18,6 +18,16 @@ func NewMentionService(db *gorm.DB) *MentionService {
 func (s *MentionService) GetAllMentions() ([]models.MentionModel, error) {
 	var mentions []models.MentionModel
 	result := s.db.Find(&mentions)
+	if result.Error != nil {
+		return nil, result.Error
+	}
+	return mentions, nil
+}
+
+// GetMentionsByArtefactID retrieves Mention records associated with a specific Artefact ID
+func (s *MentionService) GetMentionsByArtefactID(artefactID int) ([]models.MentionModel, error) {
+	var mentions []models.MentionModel
+	result := s.db.Where("artefact_id = ?", artefactID).Find(&mentions)
 	if result.Error != nil {
 		return nil, result.Error
 	}
@@ -51,26 +61,26 @@ func (s *MentionService) DeleteMention(id int) error {
 
 // UpdateMention updates an existing Mention record
 func (s *MentionService) UpdateMention(id int, updatedMention *models.MentionModel) (*models.MentionModel, error) {
-    var mention models.MentionModel
-    result := s.db.First(&mention, id)
-    if result.Error != nil {
-        return nil, result.Error
-    }
-    
-    // Set the ID to ensure we update the correct record
-    updatedMention.Id = id
-    
-    // Use Updates instead of replacing the whole object
-    result = s.db.Model(&mention).Updates(updatedMention)
-    if result.Error != nil {
-        return nil, result.Error
-    }
-    
-    // Fetch the updated record
-    result = s.db.First(&mention, id)
-    if result.Error != nil {
-        return nil, result.Error
-    }
-    
-    return &mention, nil
+	var mention models.MentionModel
+	result := s.db.First(&mention, id)
+	if result.Error != nil {
+		return nil, result.Error
+	}
+
+	// Set the ID to ensure we update the correct record
+	updatedMention.Id = id
+
+	// Use Updates instead of replacing the whole object
+	result = s.db.Model(&mention).Updates(updatedMention)
+	if result.Error != nil {
+		return nil, result.Error
+	}
+
+	// Fetch the updated record
+	result = s.db.First(&mention, id)
+	if result.Error != nil {
+		return nil, result.Error
+	}
+
+	return &mention, nil
 }

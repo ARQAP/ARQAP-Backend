@@ -16,6 +16,7 @@ func SetupMentionRoutes(router *gin.Engine, service *services.MentionService) {
 	{
 		mention.GET("/", mentionController.GetMentions)
 		mention.GET("/:id", mentionController.GetMentionByID)
+		mention.GET("/by-artefact/:id", mentionController.GetMentionsByArtefactID)
 		mention.POST("/", mentionController.CreateMention)
 		mention.PUT("/:id", mentionController.UpdateMention)
 		mention.DELETE("/:id", mentionController.DeleteMention)
