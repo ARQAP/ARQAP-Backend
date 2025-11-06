@@ -247,10 +247,10 @@ func (s *ArtefactService) SavePicture(picture *models.PictureModel) error {
 		// aseguramos update sobre el registro existente
 		picture.ID = existing.ID
 		if err := s.db.Model(&existing).Updates(map[string]interface{}{
-			"file_path":   picture.FilePath,
-			"contentType": picture.ContentType,
-			"size":        picture.Size,
-			"updated_at":  time.Now(),
+			"file_path":    picture.FilePath,
+			"content_type": picture.ContentType,
+			"size":         picture.Size,
+			"updated_at":   time.Now(),
 		}).Error; err != nil {
 			return err
 		}
