@@ -18,7 +18,7 @@ func NewLoanService(db *gorm.DB) *LoanService {
 // GetAllLoans retrieves all Loan records from the database
 func (s *LoanService) GetAllLoans() ([]models.LoanModel, error) {
 	var loans []models.LoanModel
-	result := s.db.Preload("Requester").Find(&loans)
+	result := s.db.Preload("Requester").Preload("Artefact").Find(&loans)
 	return loans, result.Error
 }
 
