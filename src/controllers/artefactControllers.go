@@ -55,6 +55,17 @@ func (ac *ArtefactController) CreateArtefact(c *gin.Context) {
 		return
 	}
 
+	// Validaciones obligatorias
+	if strings.TrimSpace(artefact.Name) == "" {
+		c.JSON(400, gin.H{"error": "El nombre es obligatorio"})
+		return
+	}
+
+	if strings.TrimSpace(artefact.Material) == "" {
+		c.JSON(400, gin.H{"error": "El material es obligatorio"})
+		return
+	}
+
 	if err := ac.service.CreateArtefact(&artefact); err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
@@ -72,6 +83,17 @@ func (ac *ArtefactController) UpdateArtefact(c *gin.Context) {
 	var artefact models.ArtefactModel
 	if err := c.ShouldBindJSON(&artefact); err != nil {
 		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Validaciones obligatorias
+	if strings.TrimSpace(artefact.Name) == "" {
+		c.JSON(400, gin.H{"error": "El nombre es obligatorio"})
+		return
+	}
+
+	if strings.TrimSpace(artefact.Material) == "" {
+		c.JSON(400, gin.H{"error": "El material es obligatorio"})
 		return
 	}
 

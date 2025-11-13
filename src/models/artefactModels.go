@@ -5,11 +5,11 @@ import "time"
 type ArtefactModel struct {
 	ID                   int                      `json:"id" gorm:"primaryKey;autoIncrement"`
 	Name                 string                   `json:"name" gorm:"type:varchar(100);not null"`
-	Material             *string                  `json:"material" gorm:"type:varchar(100)"`
+	Material             string                   `json:"material" gorm:"type:varchar(100);not null"`
 	Observation          *string                  `json:"observation" gorm:"type:text"`
 	Available            bool                     `json:"available" gorm:"type:boolean;default:true;not null"`
-	Picture              []PictureModel           `json:"picture,omitempty" gorm:"foreignKey:ArtefactID;constraint:OnUpdate:CASCADE,OnDelete:SET NULL;"`
-	HistoricalRecord     []HistoricalRecordModel  `json:"historicalRecord,omitempty" gorm:"foreignKey:ArtefactID;constraint:OnUpdate:CASCADE,OnDelete:SET NULL;"`
+	Picture              []PictureModel           `json:"picture,omitempty" gorm:"foreignKey:ArtefactID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;"`
+	HistoricalRecord     []HistoricalRecordModel  `json:"historicalRecord,omitempty" gorm:"foreignKey:ArtefactID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;"`
 	Description          *string                  `json:"description" gorm:"type:text"`
 	CollectionID         *int                     `json:"collectionId" gorm:"column:collection_id"`
 	Collection           *CollectionModel         `json:"collection" gorm:"foreignKey:CollectionID;references:Id"`
