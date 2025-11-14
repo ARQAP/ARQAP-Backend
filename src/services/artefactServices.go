@@ -90,8 +90,14 @@ func contains(s, substr string) bool {
 		(len(s) > len(substr) && s[:len(substr)] == substr))
 }
 
-func (s *ArtefactService) GetAllArtefacts() ([]models.ArtefactModel, error) {
-	cacheKey := "all_artefacts"
+func (s *ArtefactService) GetAllArtefacts(shelfId *int) ([]models.ArtefactModel, error) {
+	// Si hay filtro por shelf, no usar cache general
+	var cacheKey string
+	if shelfId != nil {
+		cacheKey = fmt.Sprintf("artefacts_shelf_%d", *shelfId)
+	} else {
+		cacheKey = "all_artefacts"
+	}
 
 	// Try to get from cache
 	if cached, found := s.getCache(cacheKey); found {
@@ -100,7 +106,15 @@ func (s *ArtefactService) GetAllArtefacts() ([]models.ArtefactModel, error) {
 
 	// If not in cache, query DB
 	var artefacts []models.ArtefactModel
-	err := s.db.Preload("Picture").Preload("HistoricalRecord").Preload("Archaeologist").Preload("ArchaeologicalSite").Preload("PhysicalLocation").Preload("Collection").Preload("InplClassifier").Preload("InternalClassifier").Preload("PhysicalLocation.Shelf").Find(&artefacts).Error
+	query := s.db.Preload("Picture").Preload("HistoricalRecord").Preload("Archaeologist").Preload("ArchaeologicalSite").Preload("PhysicalLocation").Preload("Collection").Preload("InplClassifier").Preload("InternalClassifier").Preload("PhysicalLocation.Shelf")
+
+	// Aplicar filtro por shelfId si está presente
+	if shelfId != nil {
+		query = query.Joins("JOIN physical_location_models ON physical_location_models.id = artefact_models.physical_location_id").
+			Where("physical_location_models.shelf_id = ?", *shelfId)
+	}
+
+	err := query.Find(&artefacts).Error
 
 	if err == nil {
 		// Save to cache for 5 minutes

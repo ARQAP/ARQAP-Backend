@@ -15,7 +15,7 @@ func SetupArtefactRoutes(router *gin.Engine, service *services.ArtefactService) 
 	artefactGroup.Use(middleware.AuthMiddleware())
 	{
 		// CRUD
-		artefactGroup.GET("/", controller.GetAllArtefacts)
+		artefactGroup.GET("", controller.GetAllArtefacts)
 		artefactGroup.GET("/:id", controller.GetArtefactByID)
 		artefactGroup.POST("/", controller.CreateArtefact)
 		artefactGroup.PUT("/:id", controller.UpdateArtefact)

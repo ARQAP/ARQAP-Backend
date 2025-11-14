@@ -24,7 +24,19 @@ func NewArtefactController(service *services.ArtefactService) *ArtefactControlle
 
 // TODO: Considerar usar un DTO para optimizar memoria y performance
 func (ac *ArtefactController) GetAllArtefacts(c *gin.Context) {
-	artefacts, err := ac.service.GetAllArtefacts()
+	// Obtener query parameter shelfId si existe
+	shelfIdStr := c.Query("shelfId")
+	var shelfId *int
+	if shelfIdStr != "" {
+		parsedId, err := strconv.Atoi(shelfIdStr)
+		if err != nil {
+			c.JSON(400, gin.H{"error": "Invalid shelfId parameter"})
+			return
+		}
+		shelfId = &parsedId
+	}
+
+	artefacts, err := ac.service.GetAllArtefacts(shelfId)
 	if err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
