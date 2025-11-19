@@ -18,6 +18,7 @@ func SetupArtefactRoutes(router *gin.Engine, service *services.ArtefactService) 
 		artefactGroup.GET("", controller.GetAllArtefacts)
 		artefactGroup.GET("/:id", controller.GetArtefactByID)
 		artefactGroup.POST("/", controller.CreateArtefact)
+		artefactGroup.POST("/with-mentions", controller.CreateArtefactWithMentions)
 		artefactGroup.PUT("/:id", controller.UpdateArtefact)
 		artefactGroup.DELETE("/:id", controller.DeleteArtefact)
 

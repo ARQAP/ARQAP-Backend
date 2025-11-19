@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -21,6 +22,11 @@ type ArtefactService struct {
 	db    *gorm.DB
 	cache map[string]*CacheEntry
 	mutex sync.RWMutex
+}
+
+type CreateArtefactWithMentionsDTO struct {
+    Artefact models.ArtefactModel    `json:"artefact"`
+    Mentions []models.MentionModel   `json:"mentions"`
 }
 
 func NewArtefactService(db *gorm.DB) *ArtefactService {
@@ -299,4 +305,47 @@ func (s *ArtefactService) SaveHistoricalRecord(record *models.HistoricalRecordMo
 	s.invalidateCache("all_artefacts")
 
 	return nil
+}
+
+func (s *ArtefactService) CreateArtefactWithMentions(dto *CreateArtefactWithMentionsDTO) (*models.ArtefactModel, error) {
+    artefact := dto.Artefact
+
+    err := s.db.Transaction(func(tx *gorm.DB) error {
+        // 1) Crear artefacto
+        if err := tx.Create(&artefact).Error; err != nil {
+            return err
+        }
+
+        // 2) Crear menciones (si hay)
+        if len(dto.Mentions) > 0 {
+            var mentionsToCreate []models.MentionModel
+
+            for _, m := range dto.Mentions {
+                // evitar menciones totalmente vacías
+                if strings.TrimSpace(m.Title) == "" && strings.TrimSpace(m.Link) == "" {
+                    continue
+                }
+                m.ArtefactId = &artefact.ID
+                mentionsToCreate = append(mentionsToCreate, m)
+            }
+
+            if len(mentionsToCreate) > 0 {
+                if err := tx.Create(&mentionsToCreate).Error; err != nil {
+                    return err
+                }
+            }
+        }
+
+        return nil
+    })
+
+    if err != nil {
+        return nil, err
+    }
+
+    // Invalidate cache (igual que CreateArtefact, pero más completo)
+    s.invalidateCache("all_artefacts")
+    s.invalidateCache(fmt.Sprintf("artefact_%d", artefact.ID))
+
+    return &artefact, nil
 }

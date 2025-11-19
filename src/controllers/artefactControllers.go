@@ -18,6 +18,11 @@ type ArtefactController struct {
 	service *services.ArtefactService
 }
 
+type CreateArtefactWithMentionsDTO struct {
+    Artefact models.ArtefactModel   `json:"artefact"`
+    Mentions []models.MentionModel  `json:"mentions"`
+}
+
 func NewArtefactController(service *services.ArtefactService) *ArtefactController {
 	return &ArtefactController{service: service}
 }
@@ -374,4 +379,33 @@ func (ac *ArtefactController) ServeHistoricalRecord(c *gin.Context) {
 	// Serve historical document with correct content type
 	c.Header("Content-Type", record.ContentType)
 	c.File(record.FilePath)
+}
+
+func (ac *ArtefactController) CreateArtefactWithMentions(c *gin.Context) {
+    var dto CreateArtefactWithMentionsDTO
+    if err := c.ShouldBindJSON(&dto); err != nil {
+        c.JSON(400, gin.H{"error": err.Error()})
+        return
+    }
+
+    artefact := dto.Artefact
+
+    // Validaciones obligatorias, igual que en CreateArtefact
+    if strings.TrimSpace(artefact.Name) == "" {
+        c.JSON(400, gin.H{"error": "El nombre es obligatorio"})
+        return
+    }
+
+    if strings.TrimSpace(artefact.Material) == "" {
+        c.JSON(400, gin.H{"error": "El material es obligatorio"})
+        return
+    }
+
+    created, err := ac.service.CreateArtefactWithMentions((*services.CreateArtefactWithMentionsDTO)(&dto))
+    if err != nil {
+        c.JSON(500, gin.H{"error": err.Error()})
+        return
+    }
+
+    c.JSON(201, created)
 }
