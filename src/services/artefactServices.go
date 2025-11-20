@@ -3,12 +3,14 @@ package services
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/ARQAP/ARQAP-Backend/src/models"
+	excelize "github.com/xuri/excelize/v2"
 	"gorm.io/gorm"
 )
 
@@ -16,6 +18,11 @@ import (
 type CacheEntry struct {
 	Data      interface{}
 	ExpiresAt time.Time
+}
+
+type ImportResult struct {
+    Imported int
+    Errors   []string
 }
 
 type ArtefactService struct {
@@ -348,4 +355,215 @@ func (s *ArtefactService) CreateArtefactWithMentions(dto *CreateArtefactWithMent
     s.invalidateCache(fmt.Sprintf("artefact_%d", artefact.ID))
 
     return &artefact, nil
+}
+
+func (s *ArtefactService) ImportArtefactsFromExcel(r io.Reader) (*ImportResult, error) {
+    f, err := excelize.OpenReader(r)
+    if err != nil {
+        return nil, fmt.Errorf("archivo excel inválido: %w", err)
+    }
+    defer f.Close()
+
+    rows, err := f.GetRows("BASE BRUCH DIEGO")
+    if err != nil {
+        return nil, fmt.Errorf("no se pudo leer la hoja BASE BRUCH DIEGO: %w", err)
+    }
+
+    result := &ImportResult{Imported: 0, Errors: []string{}}
+
+    // ===============================
+    // 1) Asegurar Colección "Bruch"
+    // ===============================
+    var bruchCollection models.CollectionModel
+    if err := s.db.
+        Where("name = ?", "Colección Bruch").
+        First(&bruchCollection).Error; err != nil {
+
+        if errors.Is(err, gorm.ErrRecordNotFound) {
+            bruchCollection = models.CollectionModel{
+                Name: "Colección Bruch",
+            }
+            if err := s.db.Create(&bruchCollection).Error; err != nil {
+                return nil, fmt.Errorf("no se pudo crear la colección Bruch: %w", err)
+            }
+        } else {
+            return nil, fmt.Errorf("error buscando colección Bruch: %w", err)
+        }
+    }
+    collectionID := bruchCollection.Id // references:Id en tu GORM
+
+    // ==========================================
+    // 2) Cache en memoria de arqueólogos por nombre
+    //     key: nombre completo leído del Excel
+    //     value: ID en la base
+    // ==========================================
+    archaeologistCache := make(map[string]int)
+
+    // ===============================
+    // 3) Recorrer filas del Excel
+    // ===============================
+    for i, row := range rows {
+        // Fila vacía o sin código → la salto
+        if len(row) == 0 || strings.TrimSpace(row[0]) == "" {
+            continue
+        }
+
+        // ---------------------------------
+        // 3.1. Nombre completo del arqueólogo desde Excel
+        // ---------------------------------
+        var archaeologistID *int
+
+        if len(row) > 1 {
+            fullName := strings.TrimSpace(row[1]) // ej: "Carlos Bruch"
+
+            if fullName != "" {
+                // Primero miro en cache para no pegarle siempre a la BD
+                if id, ok := archaeologistCache[fullName]; ok {
+                    idCopy := id
+                    archaeologistID = &idCopy
+                } else {
+                    // No está en cache, buscar/crear en la base
+                    // Partimos el nombre en FirstName + LastName (muy simple)
+                    firstName := fullName
+                    lastName := ""
+                    parts := strings.Fields(fullName)
+                    if len(parts) > 1 {
+                        firstName = parts[0]
+                        lastName = strings.Join(parts[1:], " ")
+                    }
+
+					var arch models.ArchaeologistModel
+					err := s.db.
+						Where(&models.ArchaeologistModel{
+							FirstName: firstName,
+							LastName:  lastName,
+						}).
+						First(&arch).Error
+
+					if errors.Is(err, gorm.ErrRecordNotFound) {
+						// Crear nuevo arqueólogo
+						arch = models.ArchaeologistModel{
+							FirstName: firstName,
+							LastName:  lastName,
+						}
+						if err := s.db.Create(&arch).Error; err != nil {
+							result.Errors = append(result.Errors, fmt.Sprintf(
+								"Fila %d: no se pudo crear arqueólogo %s: %v",
+								i+1, fullName, err,
+							))
+							// sigo con la fila, pero sin archaeologist_id
+						} else {
+							archaeologistCache[fullName] = arch.Id
+							idCopy := arch.Id
+							archaeologistID = &idCopy
+						}
+					} else if err != nil {
+						// error distinto a not found
+						result.Errors = append(result.Errors, fmt.Sprintf(
+							"Fila %d: error buscando arqueólogo %s: %v",
+							i+1, fullName, err,
+						))
+					} else {
+						// Encontrado correctamente
+						archaeologistCache[fullName] = arch.Id
+						idCopy := arch.Id
+						archaeologistID = &idCopy
+					}
+                }
+            }
+        }
+
+        // ---------------------------------
+        // 3.2. Datos del artefacto
+        // ---------------------------------
+
+        // Col 0: código inventario → Name
+        name := strings.TrimSpace(row[0])
+
+        // Col 7: material
+        material := ""
+        if len(row) > 7 {
+            material = strings.TrimSpace(row[7])
+        }
+
+        // Col 8–13: tipología + procedencia → Description
+        typology := ""
+        if len(row) > 8 {
+            typology = strings.TrimSpace(row[8])
+        }
+
+        region, country, province, locality, site := "", "", "", "", ""
+        if len(row) > 9 {
+            region = strings.TrimSpace(row[9])
+        }
+        if len(row) > 10 {
+            country = strings.TrimSpace(row[10])
+        }
+        if len(row) > 11 {
+            province = strings.TrimSpace(row[11])
+        }
+        if len(row) > 12 {
+            locality = strings.TrimSpace(row[12])
+        }
+        if len(row) > 13 {
+            site = strings.TrimSpace(row[13])
+        }
+
+        // armamos una descripción básica
+        descParts := []string{}
+        if typology != "" {
+            descParts = append(descParts, typology)
+        }
+        if region != "" {
+            descParts = append(descParts, region)
+        }
+
+        loc := []string{}
+        if site != "" {
+            loc = append(loc, site)
+        }
+        if locality != "" {
+            loc = append(loc, locality)
+        }
+        if province != "" {
+            loc = append(loc, province)
+        }
+        if country != "" {
+            loc = append(loc, country)
+        }
+        if len(loc) > 0 {
+            descParts = append(descParts, strings.Join(loc, ", "))
+        }
+
+        var description *string
+        if len(descParts) > 0 {
+            d := strings.Join(descParts, " – ")
+            description = &d
+        }
+
+        artefact := models.ArtefactModel{
+            Name:        name,
+            Material:    material,
+            Available:   true,
+            Description: description,
+            CollectionID: &collectionID,
+            // puede ir nil si no pudimos crear/buscar al arqueólogo
+            ArchaeologistID: archaeologistID,
+        }
+
+        if err := s.db.Create(&artefact).Error; err != nil {
+            result.Errors = append(result.Errors, fmt.Sprintf("Fila %d: %v", i+1, err))
+            continue
+        }
+
+        result.Imported++
+    }
+
+    s.invalidateCache("all_artefacts")
+
+    if result.Imported == 0 && len(result.Errors) > 0 {
+        return result, fmt.Errorf("no se pudo importar ninguna pieza")
+    }
+
+    return result, nil
 }

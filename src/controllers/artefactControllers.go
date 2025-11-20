@@ -3,6 +3,7 @@ package controllers
 import (
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -408,4 +409,47 @@ func (ac *ArtefactController) CreateArtefactWithMentions(c *gin.Context) {
     }
 
     c.JSON(201, created)
+}
+
+func (c *ArtefactController) ImportArtefactsFromExcel(ctx *gin.Context) {
+    file, err := ctx.FormFile("file")
+    if err != nil {
+        ctx.JSON(http.StatusBadRequest, gin.H{
+            "error": "no se recibió el archivo",
+            "detail": err.Error(),
+        })
+        return
+    }
+
+    f, err := file.Open()
+    if err != nil {
+        ctx.JSON(http.StatusBadRequest, gin.H{
+            "error": "no se pudo abrir el archivo",
+            "detail": err.Error(),
+        })
+        return
+    }
+    defer f.Close()
+
+    result, err := c.service.ImportArtefactsFromExcel(f)
+    if err != nil {
+        // 👇 manejar el caso en que result sea nil
+        if result != nil {
+            ctx.JSON(http.StatusBadRequest, gin.H{
+                "error":  err.Error(),
+                "errors": result.Errors,
+            })
+        } else {
+            ctx.JSON(http.StatusBadRequest, gin.H{
+                "error": err.Error(),
+            })
+        }
+        return
+    }
+
+    ctx.JSON(http.StatusOK, gin.H{
+        "message":  "Importación completada",
+        "imported": result.Imported,
+        "errors":   result.Errors, // pueden ser warnings de filas puntuales
+    })
 }
