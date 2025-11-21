@@ -380,7 +380,7 @@ func (s *ArtefactService) CreateArtefactWithMentions(dto *CreateArtefactWithMent
 	return &artefact, nil
 }
 
-// ======================= RESUMENES (ENDPOINT NUEVO) =======================
+// ======================= RESÚMENES LIVIANOS =======================
 
 func (s *ArtefactService) GetArtefactSummaries(shelfId *int) ([]dtos.ArtefactSummaryDTO, error) {
 	// Cache key dinámico según el filtro
@@ -389,77 +389,85 @@ func (s *ArtefactService) GetArtefactSummaries(shelfId *int) ([]dtos.ArtefactSum
 		cacheKey = fmt.Sprintf("artefact_summaries_shelf_%d", *shelfId)
 	}
 
-	// Intentar cache
 	if cached, found := s.getCache(cacheKey); found {
 		return cached.([]dtos.ArtefactSummaryDTO), nil
 	}
 
-	query := s.db.
-		Preload("Archaeologist").
-		Preload("ArchaeologicalSite").
-		Preload("Collection").
-		Preload("PhysicalLocation.Shelf")
-
-	// Filtrar por shelfId si se proporciona
-	if shelfId != nil {
-		query = query.Joins("JOIN physical_location_models ON artefact_models.physical_location_id = physical_location_models.id").
-			Where("physical_location_models.shelf_id = ?", *shelfId)
+	type summaryRow struct {
+		ID                     int
+		Name                   string
+		Material               string
+		CollectionName         *string `gorm:"column:collection_name"`
+		ArchaeologistFirstName *string `gorm:"column:archaeologist_first_name"`
+		ArchaeologistLastName  *string `gorm:"column:archaeologist_last_name"`
+		ArchaeologicalSiteName *string `gorm:"column:archaeological_site_name"`
+		ShelfCode              *int    `gorm:"column:shelf_code"`
+		Level                  *int    `gorm:"column:level"`
+		Column                 *string `gorm:"column:column"`
 	}
 
-	var artefacts []models.ArtefactModel
-	err := query.Find(&artefacts).Error
+	var rows []summaryRow
 
-	if err != nil {
+	query := s.db.Table("artefact_models AS a").
+		Select(`a.id,
+			a.name,
+			a.material,
+			c.name AS collection_name,
+			ar.firstname AS archaeologist_first_name,
+			ar.lastname AS archaeologist_last_name,
+			site."Name" AS archaeological_site_name,
+			sh.code AS shelf_code,
+			pl.level AS level,
+			pl.column AS column`).
+		Joins("LEFT JOIN collection_models c ON c.id = a.collection_id").
+		Joins("LEFT JOIN archaeologist_models ar ON ar.id = a.archaeologist_id").
+		Joins("LEFT JOIN archaeological_site_models site ON site.id = a.archaeological_site_id").
+		Joins("LEFT JOIN physical_location_models pl ON pl.id = a.physical_location_id").
+		Joins("LEFT JOIN shelf_models sh ON sh.id = pl.shelf_id")
+
+	if shelfId != nil {
+		query = query.Where("pl.shelf_id = ?", *shelfId)
+	}
+
+	if err := query.Scan(&rows).Error; err != nil {
 		return nil, err
 	}
 
-	summaries := make([]dtos.ArtefactSummaryDTO, 0, len(artefacts))
+	summaries := make([]dtos.ArtefactSummaryDTO, 0, len(rows))
 
-	for _, a := range artefacts {
+	for _, row := range rows {
 		dto := dtos.ArtefactSummaryDTO{
-			ID:       a.ID,
-			Name:     a.Name,
-			Material: a.Material,
+			ID:                     row.ID,
+			Name:                   row.Name,
+			Material:               row.Material,
+			CollectionName:         row.CollectionName,
+			ArchaeologicalSiteName: row.ArchaeologicalSiteName,
+			ShelfCode:              row.ShelfCode,
+			Level:                  row.Level,
+			Column:                 row.Column,
 		}
 
-		// Sitio arqueológico
-		if a.ArchaeologicalSite != nil {
-			siteName := a.ArchaeologicalSite.Name // ajustá el campo si se llama distinto
-			dto.ArchaeologicalSiteName = &siteName
-		}
-
-		// Arqueólogo
-		if a.Archaeologist != nil {
-			// Si tenés campos separados, concatenás:
-			// fullName := a.Archaeologist.FirstName + " " + a.Archaeologist.LastName
-			fullName := a.Archaeologist.FirstName // ajustá según tu modelo
-			dto.ArchaeologistName = &fullName
-		}
-
-		// Colección
-		if a.Collection != nil {
-			collectionName := a.Collection.Name // ajustá si se llama distinto
-			dto.CollectionName = &collectionName
-		}
-
-		// Ubicación física
-		if a.PhysicalLocation != nil {
-			colStr := string(a.PhysicalLocation.Column)
-			dto.Column = &colStr
-
-			levelInt := int(a.PhysicalLocation.Level)
-			dto.Level = &levelInt
-
-			if a.PhysicalLocation.Shelf.ID != 0 {
-				code := a.PhysicalLocation.Shelf.Code
-				dto.ShelfCode = &code
+		var nameParts []string
+		if row.ArchaeologistFirstName != nil {
+			first := strings.TrimSpace(*row.ArchaeologistFirstName)
+			if first != "" {
+				nameParts = append(nameParts, first)
 			}
+		}
+		if row.ArchaeologistLastName != nil {
+			last := strings.TrimSpace(*row.ArchaeologistLastName)
+			if last != "" {
+				nameParts = append(nameParts, last)
+			}
+		}
+		if len(nameParts) > 0 {
+			fullName := strings.Join(nameParts, " ")
+			dto.ArchaeologistName = &fullName
 		}
 
 		summaries = append(summaries, dto)
 	}
 
-	// Cachear 5 minutos
 	s.setCache(cacheKey, summaries, 5*time.Minute)
 
 	return summaries, nil

@@ -416,10 +416,15 @@ func (ac *ArtefactController) CreateArtefactWithMentions(c *gin.Context) {
 // ======================= RESUMENES (ENDPOINT NUEVO) =======================
 
 func (ac *ArtefactController) GetArtefactSummaries(c *gin.Context) {
+<<<<<<< HEAD
 	// Obtener query parameter shelfId si existe
 	shelfIdStr := c.Query("shelfId")
 	var shelfId *int
 	if shelfIdStr != "" {
+=======
+	var shelfId *int
+	if shelfIdStr := c.Query("shelfId"); shelfIdStr != "" {
+>>>>>>> 1d4a55074754b5ea8e380ac4e25e79101d1cb3f3
 		parsedId, err := strconv.Atoi(shelfIdStr)
 		if err != nil {
 			c.JSON(400, gin.H{"error": "Invalid shelfId parameter"})
