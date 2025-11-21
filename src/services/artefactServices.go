@@ -382,21 +382,32 @@ func (s *ArtefactService) CreateArtefactWithMentions(dto *CreateArtefactWithMent
 
 // ======================= RESUMENES (ENDPOINT NUEVO) =======================
 
-func (s *ArtefactService) GetArtefactSummaries() ([]dtos.ArtefactSummaryDTO, error) {
-	const cacheKey = "artefact_summaries"
+func (s *ArtefactService) GetArtefactSummaries(shelfId *int) ([]dtos.ArtefactSummaryDTO, error) {
+	// Cache key dinámico según el filtro
+	cacheKey := "artefact_summaries"
+	if shelfId != nil {
+		cacheKey = fmt.Sprintf("artefact_summaries_shelf_%d", *shelfId)
+	}
 
 	// Intentar cache
 	if cached, found := s.getCache(cacheKey); found {
 		return cached.([]dtos.ArtefactSummaryDTO), nil
 	}
 
-	var artefacts []models.ArtefactModel
-	err := s.db.
+	query := s.db.
 		Preload("Archaeologist").
 		Preload("ArchaeologicalSite").
 		Preload("Collection").
-		Preload("PhysicalLocation.Shelf").
-		Find(&artefacts).Error
+		Preload("PhysicalLocation.Shelf")
+
+	// Filtrar por shelfId si se proporciona
+	if shelfId != nil {
+		query = query.Joins("JOIN physical_location_models ON artefact_models.physical_location_id = physical_location_models.id").
+			Where("physical_location_models.shelf_id = ?", *shelfId)
+	}
+
+	var artefacts []models.ArtefactModel
+	err := query.Find(&artefacts).Error
 
 	if err != nil {
 		return nil, err
