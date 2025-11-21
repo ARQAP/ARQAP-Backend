@@ -29,5 +29,8 @@ func SetupArtefactRoutes(router *gin.Engine, service *services.ArtefactService) 
 		// Serve
 		artefactGroup.GET("/:id/picture", controller.ServePicture)
 		artefactGroup.GET("/:id/historical-record", controller.ServeHistoricalRecord)
+
+		// Summary
+		artefactGroup.GET("/summary", controller.GetArtefactSummaries)
 	}
 }
