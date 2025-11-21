@@ -19,14 +19,11 @@ type ArtefactController struct {
 	service *services.ArtefactService
 }
 
-type CreateArtefactWithMentionsDTO struct {
-    Artefact models.ArtefactModel   `json:"artefact"`
-    Mentions []models.MentionModel  `json:"mentions"`
-}
-
 func NewArtefactController(service *services.ArtefactService) *ArtefactController {
 	return &ArtefactController{service: service}
 }
+
+// ======================= ARTEFACTOS COMPLETOS =======================
 
 // TODO: Considerar usar un DTO para optimizar memoria y performance
 func (ac *ArtefactController) GetAllArtefacts(c *gin.Context) {
@@ -136,6 +133,8 @@ func (ac *ArtefactController) DeleteArtefact(c *gin.Context) {
 	c.JSON(200, gin.H{"message": "Artefact deleted successfully"})
 }
 
+// ======================= FOTO =======================
+
 func (ac *ArtefactController) UploadPicture(c *gin.Context) {
 	id, err := strconv.Atoi(c.Param("id"))
 	if err != nil {
@@ -201,13 +200,65 @@ func (ac *ArtefactController) UploadPicture(c *gin.Context) {
 
 	if err := ac.service.SavePicture(&picture); err != nil {
 		// Clean up file if DB save fails
-		os.Remove(filePath)
+		_ = os.Remove(filePath)
 		c.JSON(500, gin.H{"error": "Could not save picture metadata"})
 		return
 	}
 
 	c.JSON(200, picture)
 }
+
+func (ac *ArtefactController) ServePicture(c *gin.Context) {
+	id, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		c.JSON(400, gin.H{"error": "Invalid ID format"})
+		return
+	}
+
+	picture, err := ac.service.GetPictureByArtefactID(id)
+	if err != nil || picture == nil {
+		c.JSON(404, gin.H{"error": "Picture not found"})
+		return
+	}
+
+	// Verify that the file exists
+	fileInfo, err := os.Stat(picture.FilePath)
+	if os.IsNotExist(err) {
+		c.JSON(404, gin.H{"error": "Picture file not found"})
+		return
+	}
+
+	// Cache headers
+	lastModified := fileInfo.ModTime().UTC().Format("Mon, 02 Jan 2006 15:04:05 GMT")
+	etag := fmt.Sprintf(`"%d-%d"`, picture.ID, picture.UpdatedAt.Unix())
+
+	// Cache for 1 year (images rarely change)
+	c.Header("Cache-Control", "public, max-age=31536000") // 1 year
+	c.Header("ETag", etag)
+	c.Header("Last-Modified", lastModified)
+
+	// Verify If-None-Match (ETag)
+	if match := c.GetHeader("If-None-Match"); match == etag {
+		c.Status(304) // Not Modified
+		return
+	}
+
+	// Verify If-Modified-Since
+	if modSince := c.GetHeader("If-Modified-Since"); modSince != "" {
+		if t, err := time.Parse("Mon, 02 Jan 2006 15:04:05 GMT", modSince); err == nil {
+			if !fileInfo.ModTime().After(t) {
+				c.Status(304) // Not Modified
+				return
+			}
+		}
+	}
+
+	// Serve file with correct content type
+	c.Header("Content-Type", picture.ContentType)
+	c.File(picture.FilePath)
+}
+
+// ======================= DOCUMENTO HISTÓRICO =======================
 
 func (ac *ArtefactController) UploadHistoricalRecord(c *gin.Context) {
 	id, err := strconv.Atoi(c.Param("id"))
@@ -275,62 +326,12 @@ func (ac *ArtefactController) UploadHistoricalRecord(c *gin.Context) {
 
 	if err := ac.service.SaveHistoricalRecord(&record); err != nil {
 		// Clean up file if DB save fails
-		os.Remove(filePath)
+		_ = os.Remove(filePath)
 		c.JSON(500, gin.H{"error": "Could not save document metadata"})
 		return
 	}
 
 	c.JSON(200, record)
-}
-
-func (ac *ArtefactController) ServePicture(c *gin.Context) {
-	id, err := strconv.Atoi(c.Param("id"))
-	if err != nil {
-		c.JSON(400, gin.H{"error": "Invalid ID format"})
-		return
-	}
-
-	picture, err := ac.service.GetPictureByArtefactID(id)
-	if err != nil {
-		c.JSON(404, gin.H{"error": "Picture not found"})
-		return
-	}
-
-	// Verify that the file exists
-	fileInfo, err := os.Stat(picture.FilePath)
-	if os.IsNotExist(err) {
-		c.JSON(404, gin.H{"error": "Picture file not found"})
-		return
-	}
-
-	// Cache headers
-	lastModified := fileInfo.ModTime().UTC().Format("Mon, 02 Jan 2006 15:04:05 GMT")
-	etag := fmt.Sprintf(`"%d-%d"`, picture.ID, picture.UpdatedAt.Unix())
-
-	// Cache for 1 year (images rarely change)
-	c.Header("Cache-Control", "public, max-age=31536000") // 1 year
-	c.Header("ETag", etag)
-	c.Header("Last-Modified", lastModified)
-
-	// Verify If-None-Match (ETag)
-	if match := c.GetHeader("If-None-Match"); match == etag {
-		c.Status(304) // Not Modified
-		return
-	}
-
-	// Verify If-Modified-Since
-	if modSince := c.GetHeader("If-Modified-Since"); modSince != "" {
-		if t, err := time.Parse("Mon, 02 Jan 2006 15:04:05 GMT", modSince); err == nil {
-			if !fileInfo.ModTime().After(t) {
-				c.Status(304) // Not Modified
-				return
-			}
-		}
-	}
-
-	// Serve file with correct content type
-	c.Header("Content-Type", picture.ContentType)
-	c.File(picture.FilePath)
 }
 
 func (ac *ArtefactController) ServeHistoricalRecord(c *gin.Context) {
@@ -341,7 +342,7 @@ func (ac *ArtefactController) ServeHistoricalRecord(c *gin.Context) {
 	}
 
 	record, err := ac.service.GetHistoricalRecordByArtefactID(id)
-	if err != nil {
+	if err != nil || record == nil {
 		c.JSON(404, gin.H{"error": "Historical record not found"})
 		return
 	}
@@ -382,33 +383,63 @@ func (ac *ArtefactController) ServeHistoricalRecord(c *gin.Context) {
 	c.File(record.FilePath)
 }
 
+// ======================= ARTEFACTO + MENCIONES =======================
+
 func (ac *ArtefactController) CreateArtefactWithMentions(c *gin.Context) {
-    var dto CreateArtefactWithMentionsDTO
-    if err := c.ShouldBindJSON(&dto); err != nil {
-        c.JSON(400, gin.H{"error": err.Error()})
-        return
-    }
+	var dto services.CreateArtefactWithMentionsDTO
+	if err := c.ShouldBindJSON(&dto); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
 
-    artefact := dto.Artefact
+	artefact := dto.Artefact
 
-    // Validaciones obligatorias, igual que en CreateArtefact
-    if strings.TrimSpace(artefact.Name) == "" {
-        c.JSON(400, gin.H{"error": "El nombre es obligatorio"})
-        return
-    }
+	// Validaciones obligatorias, igual que en CreateArtefact
+	if strings.TrimSpace(artefact.Name) == "" {
+		c.JSON(400, gin.H{"error": "El nombre es obligatorio"})
+		return
+	}
 
-    if strings.TrimSpace(artefact.Material) == "" {
-        c.JSON(400, gin.H{"error": "El material es obligatorio"})
-        return
-    }
+	if strings.TrimSpace(artefact.Material) == "" {
+		c.JSON(400, gin.H{"error": "El material es obligatorio"})
+		return
+	}
 
-    created, err := ac.service.CreateArtefactWithMentions((*services.CreateArtefactWithMentionsDTO)(&dto))
-    if err != nil {
-        c.JSON(500, gin.H{"error": err.Error()})
-        return
-    }
+	created, err := ac.service.CreateArtefactWithMentions(&dto)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
 
-    c.JSON(201, created)
+	c.JSON(201, created)
+}
+
+// ======================= RESUMENES (ENDPOINT NUEVO) =======================
+
+func (ac *ArtefactController) GetArtefactSummaries(c *gin.Context) {
+<<<<<<< HEAD
+	// Obtener query parameter shelfId si existe
+	shelfIdStr := c.Query("shelfId")
+	var shelfId *int
+	if shelfIdStr != "" {
+=======
+	var shelfId *int
+	if shelfIdStr := c.Query("shelfId"); shelfIdStr != "" {
+>>>>>>> 1d4a55074754b5ea8e380ac4e25e79101d1cb3f3
+		parsedId, err := strconv.Atoi(shelfIdStr)
+		if err != nil {
+			c.JSON(400, gin.H{"error": "Invalid shelfId parameter"})
+			return
+		}
+		shelfId = &parsedId
+	}
+
+	summaries, err := ac.service.GetArtefactSummaries(shelfId)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, summaries)
 }
 
 func (c *ArtefactController) ImportArtefactsFromExcel(ctx *gin.Context) {

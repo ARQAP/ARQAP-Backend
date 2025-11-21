@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ARQAP/ARQAP-Backend/src/dtos"
 	"github.com/ARQAP/ARQAP-Backend/src/models"
 	excelize "github.com/xuri/excelize/v2"
 	"gorm.io/gorm"
@@ -32,8 +33,8 @@ type ArtefactService struct {
 }
 
 type CreateArtefactWithMentionsDTO struct {
-    Artefact models.ArtefactModel    `json:"artefact"`
-    Mentions []models.MentionModel   `json:"mentions"`
+	Artefact models.ArtefactModel  `json:"artefact"`
+	Mentions []models.MentionModel `json:"mentions"`
 }
 
 func NewArtefactService(db *gorm.DB) *ArtefactService {
@@ -103,6 +104,8 @@ func contains(s, substr string) bool {
 		(len(s) > len(substr) && s[:len(substr)] == substr))
 }
 
+// ======================= ARTEFACTOS COMPLETOS =======================
+
 func (s *ArtefactService) GetAllArtefacts(shelfId *int) ([]models.ArtefactModel, error) {
 	// Si hay filtro por shelf, no usar cache general
 	var cacheKey string
@@ -119,7 +122,15 @@ func (s *ArtefactService) GetAllArtefacts(shelfId *int) ([]models.ArtefactModel,
 
 	// If not in cache, query DB
 	var artefacts []models.ArtefactModel
-	query := s.db.Preload("Picture").Preload("HistoricalRecord").Preload("Archaeologist").Preload("ArchaeologicalSite").Preload("PhysicalLocation").Preload("Collection").Preload("InplClassifier").Preload("InternalClassifier").Preload("PhysicalLocation.Shelf")
+	query := s.db.Preload("Picture").
+		Preload("HistoricalRecord").
+		Preload("Archaeologist").
+		Preload("ArchaeologicalSite").
+		Preload("PhysicalLocation").
+		Preload("Collection").
+		Preload("InplClassifier").
+		Preload("InternalClassifier").
+		Preload("PhysicalLocation.Shelf")
 
 	// Aplicar filtro por shelfId si está presente
 	if shelfId != nil {
@@ -149,7 +160,16 @@ func (s *ArtefactService) GetArtefactByID(id int) (*models.ArtefactModel, error)
 	// If not in cache, query DB
 	var artefact models.ArtefactModel
 
-	err := s.db.Preload("Picture").Preload("HistoricalRecord").Preload("Archaeologist").Preload("ArchaeologicalSite").Preload("PhysicalLocation").Preload("Collection").Preload("InplClassifier").Preload("InternalClassifier").Preload("PhysicalLocation.Shelf").First(&artefact, id).Error
+	err := s.db.Preload("Picture").
+		Preload("HistoricalRecord").
+		Preload("Archaeologist").
+		Preload("ArchaeologicalSite").
+		Preload("PhysicalLocation").
+		Preload("Collection").
+		Preload("InplClassifier").
+		Preload("InternalClassifier").
+		Preload("PhysicalLocation.Shelf").
+		First(&artefact, id).Error
 	if err != nil {
 		return nil, err
 	}
@@ -167,6 +187,7 @@ func (s *ArtefactService) CreateArtefact(artefact *models.ArtefactModel) error {
 
 	// Invalidate related cache
 	s.invalidateCache("all_artefacts")
+	s.invalidateCache("artefact_summaries")
 
 	return nil
 }
@@ -179,6 +200,7 @@ func (s *ArtefactService) UpdateArtefact(id int, artefact *models.ArtefactModel)
 	// Invalidate specific and general cache
 	s.invalidateCache(fmt.Sprintf("artefact_%d", id))
 	s.invalidateCache("all_artefacts")
+	s.invalidateCache("artefact_summaries")
 
 	return nil
 }
@@ -192,10 +214,10 @@ func (s *ArtefactService) DeleteArtefact(id int) error {
 
 	// Delete the files if they exist
 	if len(artefact.Picture) > 0 && artefact.Picture[0].FilePath != "" {
-		os.Remove(artefact.Picture[0].FilePath)
+		_ = os.Remove(artefact.Picture[0].FilePath)
 	}
 	if len(artefact.HistoricalRecord) > 0 && artefact.HistoricalRecord[0].FilePath != "" {
-		os.Remove(artefact.HistoricalRecord[0].FilePath)
+		_ = os.Remove(artefact.HistoricalRecord[0].FilePath)
 	}
 
 	// Delete from DB
@@ -206,9 +228,12 @@ func (s *ArtefactService) DeleteArtefact(id int) error {
 	// Invalidate cache
 	s.invalidateCache(fmt.Sprintf("artefact_%d", id))
 	s.invalidateCache("all_artefacts")
+	s.invalidateCache("artefact_summaries")
 
 	return nil
 }
+
+// ======================= FOTO Y DOCUMENTO =======================
 
 func (s *ArtefactService) GetPictureByArtefactID(artefactID int) (*models.PictureModel, error) {
 	cacheKey := fmt.Sprintf("picture_%d", artefactID)
@@ -286,6 +311,7 @@ func (s *ArtefactService) SavePicture(picture *models.PictureModel) error {
 	s.invalidateCache(fmt.Sprintf("picture_%d", picture.ArtefactID))
 	s.invalidateCache(fmt.Sprintf("artefact_%d", picture.ArtefactID))
 	s.invalidateCache("all_artefacts")
+	s.invalidateCache("artefact_summaries")
 	return nil
 }
 
@@ -294,7 +320,7 @@ func (s *ArtefactService) SaveHistoricalRecord(record *models.HistoricalRecordMo
 	var existing models.HistoricalRecordModel
 	if err := s.db.Where("artefact_id = ?", record.ArtefactID).First(&existing).Error; err == nil {
 		// Already exists, delete previous file
-		os.Remove(existing.FilePath)
+		_ = os.Remove(existing.FilePath)
 		// Update existing record
 		if err := s.db.Where("artefact_id = ?", record.ArtefactID).Updates(record).Error; err != nil {
 			return err
@@ -310,51 +336,148 @@ func (s *ArtefactService) SaveHistoricalRecord(record *models.HistoricalRecordMo
 	s.invalidateCache(fmt.Sprintf("historical_record_%d", record.ArtefactID))
 	s.invalidateCache(fmt.Sprintf("artefact_%d", record.ArtefactID))
 	s.invalidateCache("all_artefacts")
+	s.invalidateCache("artefact_summaries")
 
 	return nil
 }
 
+// ======================= ARTEFACTO + MENCIONES =======================
+
 func (s *ArtefactService) CreateArtefactWithMentions(dto *CreateArtefactWithMentionsDTO) (*models.ArtefactModel, error) {
-    artefact := dto.Artefact
+	artefact := dto.Artefact
 
-    err := s.db.Transaction(func(tx *gorm.DB) error {
-        // 1) Crear artefacto
-        if err := tx.Create(&artefact).Error; err != nil {
-            return err
-        }
+	err := s.db.Transaction(func(tx *gorm.DB) error {
+		// 1) Crear artefacto
+		if err := tx.Create(&artefact).Error; err != nil {
+			return err
+		}
 
-        // 2) Crear menciones (si hay)
-        if len(dto.Mentions) > 0 {
-            var mentionsToCreate []models.MentionModel
+		// 2) Crear menciones (si hay)
+		if len(dto.Mentions) > 0 {
+			var mentionsToCreate []models.MentionModel
 
-            for _, m := range dto.Mentions {
-                // evitar menciones totalmente vacías
-                if strings.TrimSpace(m.Title) == "" && strings.TrimSpace(m.Link) == "" {
-                    continue
-                }
-                m.ArtefactId = &artefact.ID
-                mentionsToCreate = append(mentionsToCreate, m)
-            }
+			for _, m := range dto.Mentions {
+				// evitar menciones totalmente vacías
+				if strings.TrimSpace(m.Title) == "" && strings.TrimSpace(m.Link) == "" {
+					continue
+				}
+				m.ArtefactId = &artefact.ID
+				mentionsToCreate = append(mentionsToCreate, m)
+			}
 
-            if len(mentionsToCreate) > 0 {
-                if err := tx.Create(&mentionsToCreate).Error; err != nil {
-                    return err
-                }
-            }
-        }
+			if len(mentionsToCreate) > 0 {
+				if err := tx.Create(&mentionsToCreate).Error; err != nil {
+					return err
+				}
+			}
+		}
 
-        return nil
-    })
+		return nil
+	})
 
-    if err != nil {
-        return nil, err
-    }
+	if err != nil {
+		return nil, err
+	}
 
-    // Invalidate cache (igual que CreateArtefact, pero más completo)
-    s.invalidateCache("all_artefacts")
-    s.invalidateCache(fmt.Sprintf("artefact_%d", artefact.ID))
+	// Invalidate cache (igual que CreateArtefact, pero más completo)
+	s.invalidateCache("all_artefacts")
+	s.invalidateCache("artefact_summaries")
+	s.invalidateCache(fmt.Sprintf("artefact_%d", artefact.ID))
 
-    return &artefact, nil
+	return &artefact, nil
+}
+
+// ======================= RESÚMENES LIVIANOS =======================
+
+func (s *ArtefactService) GetArtefactSummaries(shelfId *int) ([]dtos.ArtefactSummaryDTO, error) {
+	// Cache key dinámico según el filtro
+	cacheKey := "artefact_summaries"
+	if shelfId != nil {
+		cacheKey = fmt.Sprintf("artefact_summaries_shelf_%d", *shelfId)
+	}
+
+	if cached, found := s.getCache(cacheKey); found {
+		return cached.([]dtos.ArtefactSummaryDTO), nil
+	}
+
+	type summaryRow struct {
+		ID                     int
+		Name                   string
+		Material               string
+		CollectionName         *string `gorm:"column:collection_name"`
+		ArchaeologistFirstName *string `gorm:"column:archaeologist_first_name"`
+		ArchaeologistLastName  *string `gorm:"column:archaeologist_last_name"`
+		ArchaeologicalSiteName *string `gorm:"column:archaeological_site_name"`
+		ShelfCode              *int    `gorm:"column:shelf_code"`
+		Level                  *int    `gorm:"column:level"`
+		Column                 *string `gorm:"column:column"`
+	}
+
+	var rows []summaryRow
+
+	query := s.db.Table("artefact_models AS a").
+		Select(`a.id,
+			a.name,
+			a.material,
+			c.name AS collection_name,
+			ar.firstname AS archaeologist_first_name,
+			ar.lastname AS archaeologist_last_name,
+			site."Name" AS archaeological_site_name,
+			sh.code AS shelf_code,
+			pl.level AS level,
+			pl.column AS column`).
+		Joins("LEFT JOIN collection_models c ON c.id = a.collection_id").
+		Joins("LEFT JOIN archaeologist_models ar ON ar.id = a.archaeologist_id").
+		Joins("LEFT JOIN archaeological_site_models site ON site.id = a.archaeological_site_id").
+		Joins("LEFT JOIN physical_location_models pl ON pl.id = a.physical_location_id").
+		Joins("LEFT JOIN shelf_models sh ON sh.id = pl.shelf_id")
+
+	if shelfId != nil {
+		query = query.Where("pl.shelf_id = ?", *shelfId)
+	}
+
+	if err := query.Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+
+	summaries := make([]dtos.ArtefactSummaryDTO, 0, len(rows))
+
+	for _, row := range rows {
+		dto := dtos.ArtefactSummaryDTO{
+			ID:                     row.ID,
+			Name:                   row.Name,
+			Material:               row.Material,
+			CollectionName:         row.CollectionName,
+			ArchaeologicalSiteName: row.ArchaeologicalSiteName,
+			ShelfCode:              row.ShelfCode,
+			Level:                  row.Level,
+			Column:                 row.Column,
+		}
+
+		var nameParts []string
+		if row.ArchaeologistFirstName != nil {
+			first := strings.TrimSpace(*row.ArchaeologistFirstName)
+			if first != "" {
+				nameParts = append(nameParts, first)
+			}
+		}
+		if row.ArchaeologistLastName != nil {
+			last := strings.TrimSpace(*row.ArchaeologistLastName)
+			if last != "" {
+				nameParts = append(nameParts, last)
+			}
+		}
+		if len(nameParts) > 0 {
+			fullName := strings.Join(nameParts, " ")
+			dto.ArchaeologistName = &fullName
+		}
+
+		summaries = append(summaries, dto)
+	}
+
+	s.setCache(cacheKey, summaries, 5*time.Minute)
+
+	return summaries, nil
 }
 
 func (s *ArtefactService) ImportArtefactsFromExcel(r io.Reader) (*ImportResult, error) {

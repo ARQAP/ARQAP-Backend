@@ -30,6 +30,9 @@ func SetupArtefactRoutes(router *gin.Engine, service *services.ArtefactService) 
 		artefactGroup.GET("/:id/picture", controller.ServePicture)
 		artefactGroup.GET("/:id/historical-record", controller.ServeHistoricalRecord)
 
+		// Summaries
+		artefactGroup.GET("/summaries", controller.GetArtefactSummaries)
+
 		// Import
 		artefactGroup.POST("/import", controller.ImportArtefactsFromExcel)
 	}
