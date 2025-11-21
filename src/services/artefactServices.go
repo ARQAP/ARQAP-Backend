@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -22,8 +25,8 @@ type CacheEntry struct {
 }
 
 type ImportResult struct {
-    Imported int
-    Errors   []string
+	Imported int
+	Errors   []string
 }
 
 type ArtefactService struct {
@@ -481,79 +484,138 @@ func (s *ArtefactService) GetArtefactSummaries(shelfId *int) ([]dtos.ArtefactSum
 }
 
 func (s *ArtefactService) ImportArtefactsFromExcel(r io.Reader) (*ImportResult, error) {
-    f, err := excelize.OpenReader(r)
-    if err != nil {
-        return nil, fmt.Errorf("archivo excel inválido: %w", err)
-    }
-    defer f.Close()
+	f, err := excelize.OpenReader(r)
+	if err != nil {
+		return nil, fmt.Errorf("archivo excel inválido: %w", err)
+	}
+	defer f.Close()
 
-    rows, err := f.GetRows("BASE BRUCH DIEGO")
-    if err != nil {
-        return nil, fmt.Errorf("no se pudo leer la hoja BASE BRUCH DIEGO: %w", err)
-    }
+	rows, err := f.GetRows("BASE BRUCH DIEGO")
+	if err != nil {
+		return nil, fmt.Errorf("no se pudo leer la hoja BASE BRUCH DIEGO: %w", err)
+	}
 
-    result := &ImportResult{Imported: 0, Errors: []string{}}
+	result := &ImportResult{Imported: 0, Errors: []string{}}
 
-    // ===============================
-    // 1) Asegurar Colección "Bruch"
-    // ===============================
-    var bruchCollection models.CollectionModel
-    if err := s.db.
-        Where("name = ?", "Colección Bruch").
-        First(&bruchCollection).Error; err != nil {
+	// ===============================
+	// 0) Leer hoja TOPOGRÁFICO y crear mapa código -> archivos
+	// ===============================
+	topoRows, err := f.GetRows("TOPOGRÁFICO")
+	if err != nil {
+		// Si no existe la hoja, continuamos sin asociar archivos
+		result.Errors = append(result.Errors, "Advertencia: no se encontró la hoja TOPOGRÁFICO, se importarán artefactos sin archivos asociados")
+	}
 
-        if errors.Is(err, gorm.ErrRecordNotFound) {
-            bruchCollection = models.CollectionModel{
-                Name: "Colección Bruch",
-            }
-            if err := s.db.Create(&bruchCollection).Error; err != nil {
-                return nil, fmt.Errorf("no se pudo crear la colección Bruch: %w", err)
-            }
-        } else {
-            return nil, fmt.Errorf("error buscando colección Bruch: %w", err)
-        }
-    }
-    collectionID := bruchCollection.Id // references:Id en tu GORM
+	// Mapa: código numérico -> {foto, ficha histórica, ficha INPL}
+	// Estructura real: Col A = ACLARACIONES (texto), Col B = FOTO PIEZA (código), Col C = FICHA INPL (código), Col D = FICHA HST. (código)
+	// Los códigos en B, C y D son el mismo número, lo usamos para construir las rutas de archivos
+	topoMap := make(map[string]struct {
+		foto           string
+		fichaHistorica string
+		fichaINPL      string
+	})
 
-    // ==========================================
-    // 2) Cache en memoria de arqueólogos por nombre
-    //     key: nombre completo leído del Excel
-    //     value: ID en la base
-    // ==========================================
-    archaeologistCache := make(map[string]int)
+	if err == nil {
+		for _, topoRow := range topoRows {
+			// Saltar filas vacías o sin código en columna B
+			if len(topoRow) < 2 || strings.TrimSpace(topoRow[1]) == "" {
+				continue
+			}
 
-    // ===============================
-    // 3) Recorrer filas del Excel
-    // ===============================
-    for i, row := range rows {
-        // Fila vacía o sin código → la salto
-        if len(row) == 0 || strings.TrimSpace(row[0]) == "" {
-            continue
-        }
+			// Columna B (índice 1) contiene el código numérico
+			codigo := strings.TrimSpace(topoRow[1])
 
-        // ---------------------------------
-        // 3.1. Nombre completo del arqueólogo desde Excel
-        // ---------------------------------
-        var archaeologistID *int
+			// Validar que el código sea numérico (puede tener texto como "Estante A" en col A)
+			if codigo == "" {
+				continue
+			}
 
-        if len(row) > 1 {
-            fullName := strings.TrimSpace(row[1]) // ej: "Carlos Bruch"
+			// Los códigos en B, C y D deberían ser iguales, pero usamos B como referencia
+			// Si C y D tienen valores diferentes, los usamos; si no, usamos el código de B
+			fotoCodigo := codigo
+			inplCodigo := codigo
+			historicaCodigo := codigo
 
-            if fullName != "" {
-                // Primero miro en cache para no pegarle siempre a la BD
-                if id, ok := archaeologistCache[fullName]; ok {
-                    idCopy := id
-                    archaeologistID = &idCopy
-                } else {
-                    // No está en cache, buscar/crear en la base
-                    // Partimos el nombre en FirstName + LastName (muy simple)
-                    firstName := fullName
-                    lastName := ""
-                    parts := strings.Fields(fullName)
-                    if len(parts) > 1 {
-                        firstName = parts[0]
-                        lastName = strings.Join(parts[1:], " ")
-                    }
+			if len(topoRow) > 2 && strings.TrimSpace(topoRow[2]) != "" {
+				inplCodigo = strings.TrimSpace(topoRow[2])
+			}
+			if len(topoRow) > 3 && strings.TrimSpace(topoRow[3]) != "" {
+				historicaCodigo = strings.TrimSpace(topoRow[3])
+			}
+
+			// Guardamos los códigos (luego se usarán para construir rutas de archivos)
+			topoMap[codigo] = struct {
+				foto           string
+				fichaHistorica string
+				fichaINPL      string
+			}{
+				foto:           fotoCodigo,
+				fichaHistorica: historicaCodigo,
+				fichaINPL:      inplCodigo,
+			}
+		}
+	}
+
+	// ===============================
+	// 1) Asegurar Colección "Bruch"
+	// ===============================
+	var bruchCollection models.CollectionModel
+	if err := s.db.
+		Where("name = ?", "Colección Bruch").
+		First(&bruchCollection).Error; err != nil {
+
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			bruchCollection = models.CollectionModel{
+				Name: "Colección Bruch",
+			}
+			if err := s.db.Create(&bruchCollection).Error; err != nil {
+				return nil, fmt.Errorf("no se pudo crear la colección Bruch: %w", err)
+			}
+		} else {
+			return nil, fmt.Errorf("error buscando colección Bruch: %w", err)
+		}
+	}
+	collectionID := bruchCollection.Id // references:Id en tu GORM
+
+	// ==========================================
+	// 2) Cache en memoria de arqueólogos por nombre
+	//     key: nombre completo leído del Excel
+	//     value: ID en la base
+	// ==========================================
+	archaeologistCache := make(map[string]int)
+
+	// ===============================
+	// 3) Recorrer filas del Excel
+	// ===============================
+	for i, row := range rows {
+		// Fila vacía o sin código → la salto
+		if len(row) == 0 || strings.TrimSpace(row[0]) == "" {
+			continue
+		}
+
+		// ---------------------------------
+		// 3.1. Nombre completo del arqueólogo desde Excel
+		// ---------------------------------
+		var archaeologistID *int
+
+		if len(row) > 1 {
+			fullName := strings.TrimSpace(row[1]) // ej: "Carlos Bruch"
+
+			if fullName != "" {
+				// Primero miro en cache para no pegarle siempre a la BD
+				if id, ok := archaeologistCache[fullName]; ok {
+					idCopy := id
+					archaeologistID = &idCopy
+				} else {
+					// No está en cache, buscar/crear en la base
+					// Partimos el nombre en FirstName + LastName (muy simple)
+					firstName := fullName
+					lastName := ""
+					parts := strings.Fields(fullName)
+					if len(parts) > 1 {
+						firstName = parts[0]
+						lastName = strings.Join(parts[1:], " ")
+					}
 
 					var arch models.ArchaeologistModel
 					err := s.db.
@@ -592,101 +654,483 @@ func (s *ArtefactService) ImportArtefactsFromExcel(r io.Reader) (*ImportResult, 
 						idCopy := arch.Id
 						archaeologistID = &idCopy
 					}
-                }
-            }
-        }
+				}
+			}
+		}
 
-        // ---------------------------------
-        // 3.2. Datos del artefacto
-        // ---------------------------------
+		// ---------------------------------
+		// 3.2. Datos del artefacto
+		// ---------------------------------
 
-        // Col 0: código inventario → Name
-        name := strings.TrimSpace(row[0])
+		// Col 0: código inventario → Name
+		name := strings.TrimSpace(row[0])
 
-        // Col 7: material
-        material := ""
-        if len(row) > 7 {
-            material = strings.TrimSpace(row[7])
-        }
+		// Col 7: material
+		material := ""
+		if len(row) > 7 {
+			material = strings.TrimSpace(row[7])
+		}
 
-        // Col 8–13: tipología + procedencia → Description
-        typology := ""
-        if len(row) > 8 {
-            typology = strings.TrimSpace(row[8])
-        }
+		// Col 8–13: tipología + procedencia → Description
+		typology := ""
+		if len(row) > 8 {
+			typology = strings.TrimSpace(row[8])
+		}
 
-        region, country, province, locality, site := "", "", "", "", ""
-        if len(row) > 9 {
-            region = strings.TrimSpace(row[9])
-        }
-        if len(row) > 10 {
-            country = strings.TrimSpace(row[10])
-        }
-        if len(row) > 11 {
-            province = strings.TrimSpace(row[11])
-        }
-        if len(row) > 12 {
-            locality = strings.TrimSpace(row[12])
-        }
-        if len(row) > 13 {
-            site = strings.TrimSpace(row[13])
-        }
+		region, country, province, locality, site := "", "", "", "", ""
+		if len(row) > 9 {
+			region = strings.TrimSpace(row[9])
+		}
+		if len(row) > 10 {
+			country = strings.TrimSpace(row[10])
+		}
+		if len(row) > 11 {
+			province = strings.TrimSpace(row[11])
+		}
+		if len(row) > 12 {
+			locality = strings.TrimSpace(row[12])
+		}
+		if len(row) > 13 {
+			site = strings.TrimSpace(row[13])
+		}
 
-        // armamos una descripción básica
-        descParts := []string{}
-        if typology != "" {
-            descParts = append(descParts, typology)
-        }
-        if region != "" {
-            descParts = append(descParts, region)
-        }
+		// armamos una descripción básica
+		descParts := []string{}
+		if typology != "" {
+			descParts = append(descParts, typology)
+		}
+		if region != "" {
+			descParts = append(descParts, region)
+		}
 
-        loc := []string{}
-        if site != "" {
-            loc = append(loc, site)
-        }
-        if locality != "" {
-            loc = append(loc, locality)
-        }
-        if province != "" {
-            loc = append(loc, province)
-        }
-        if country != "" {
-            loc = append(loc, country)
-        }
-        if len(loc) > 0 {
-            descParts = append(descParts, strings.Join(loc, ", "))
-        }
+		loc := []string{}
+		if site != "" {
+			loc = append(loc, site)
+		}
+		if locality != "" {
+			loc = append(loc, locality)
+		}
+		if province != "" {
+			loc = append(loc, province)
+		}
+		if country != "" {
+			loc = append(loc, country)
+		}
+		if len(loc) > 0 {
+			descParts = append(descParts, strings.Join(loc, ", "))
+		}
 
-        var description *string
-        if len(descParts) > 0 {
-            d := strings.Join(descParts, " – ")
-            description = &d
-        }
+		var description *string
+		if len(descParts) > 0 {
+			d := strings.Join(descParts, " – ")
+			description = &d
+		}
 
-        artefact := models.ArtefactModel{
-            Name:        name,
-            Material:    material,
-            Available:   true,
-            Description: description,
-            CollectionID: &collectionID,
-            // puede ir nil si no pudimos crear/buscar al arqueólogo
-            ArchaeologistID: archaeologistID,
-        }
+		artefact := models.ArtefactModel{
+			Name:         name,
+			Material:     material,
+			Available:    true,
+			Description:  description,
+			CollectionID: &collectionID,
+			// puede ir nil si no pudimos crear/buscar al arqueólogo
+			ArchaeologistID: archaeologistID,
+		}
 
-        if err := s.db.Create(&artefact).Error; err != nil {
-            result.Errors = append(result.Errors, fmt.Sprintf("Fila %d: %v", i+1, err))
-            continue
-        }
+		if err := s.db.Create(&artefact).Error; err != nil {
+			result.Errors = append(result.Errors, fmt.Sprintf("Fila %d: %v", i+1, err))
+			continue
+		}
 
-        result.Imported++
-    }
+		// ===============================
+		// 3.3. Asociar archivos desde hoja TOPOGRÁFICO
+		// ===============================
+		// Extraer número del código (ej: 5788 de "MLP-Ar-CB-5788")
+		re := regexp.MustCompile(`(\d+)$`)
+		matches := re.FindStringSubmatch(name)
+		if len(matches) > 1 && len(topoMap) > 0 {
+			codigoNum := matches[1]
+			if topoData, found := topoMap[codigoNum]; found {
+				// Asociar foto usando el código numérico
+				if topoData.foto != "" {
+					if err := s.associatePictureFromCode(&artefact, topoData.foto); err != nil {
+						result.Errors = append(result.Errors, fmt.Sprintf("Fila %d: error asociando foto: %v", i+1, err))
+					}
+				}
 
-    s.invalidateCache("all_artefacts")
+				// Asociar ficha histórica usando el código numérico
+				if topoData.fichaHistorica != "" {
+					if err := s.associateHistoricalRecordFromCode(&artefact, topoData.fichaHistorica); err != nil {
+						result.Errors = append(result.Errors, fmt.Sprintf("Fila %d: error asociando ficha histórica: %v", i+1, err))
+					}
+				}
 
-    if result.Imported == 0 && len(result.Errors) > 0 {
-        return result, fmt.Errorf("no se pudo importar ninguna pieza")
-    }
+				// Asociar ficha INPL usando el código numérico
+				if topoData.fichaINPL != "" {
+					if err := s.associateINPLFromCode(&artefact, topoData.fichaINPL); err != nil {
+						result.Errors = append(result.Errors, fmt.Sprintf("Fila %d: error asociando ficha INPL: %v", i+1, err))
+					}
+				}
+			}
+		}
 
-    return result, nil
+		result.Imported++
+	}
+
+	s.invalidateCache("all_artefacts")
+
+	if result.Imported == 0 && len(result.Errors) > 0 {
+		return result, fmt.Errorf("no se pudo importar ninguna pieza")
+	}
+
+	return result, nil
+}
+
+// ===============================
+// Funciones auxiliares para asociar archivos
+// ===============================
+
+// findFileByCode busca un archivo por código numérico en un directorio base
+// Intenta diferentes patrones de nombres: codigo.ext, foto_codigo.ext, codigo_foto.ext, etc.
+func findFileByCode(baseDir string, codigo string, extensions []string) (string, error) {
+	if baseDir == "" {
+		// Si no hay directorio base configurado, intentar directorios comunes
+		baseDir = "archivos_bruch"
+	}
+
+	// Patrones de nombres a intentar
+	patterns := []string{
+		codigo,                          // 5788.jpg
+		fmt.Sprintf("foto_%s", codigo),  // foto_5788.jpg
+		fmt.Sprintf("%s_foto", codigo),  // 5788_foto.jpg
+		fmt.Sprintf("pieza_%s", codigo), // pieza_5788.jpg
+	}
+
+	for _, pattern := range patterns {
+		for _, ext := range extensions {
+			fullPath := filepath.Join(baseDir, pattern+ext)
+			if _, err := os.Stat(fullPath); err == nil {
+				return fullPath, nil
+			}
+		}
+	}
+
+	return "", fmt.Errorf("archivo no encontrado para código %s en %s", codigo, baseDir)
+}
+
+// associatePictureFromCode busca y asocia una foto usando el código numérico
+func (s *ArtefactService) associatePictureFromCode(artefact *models.ArtefactModel, codigo string) error {
+	// Buscar archivo por código
+	extensions := []string{".jpg", ".jpeg", ".png", ".gif", ".webp"}
+	baseDir := os.Getenv("BRUCH_FILES_BASE_DIR") // Directorio base configurable
+	if baseDir == "" {
+		baseDir = "archivos_bruch"
+	}
+
+	sourcePath, err := findFileByCode(baseDir, codigo, extensions)
+	if err != nil {
+		return err // Archivo no encontrado, pero no es crítico
+	}
+
+	return s.associatePictureFromPath(artefact, sourcePath)
+}
+
+// associateHistoricalRecordFromCode busca y asocia una ficha histórica usando el código numérico
+func (s *ArtefactService) associateHistoricalRecordFromCode(artefact *models.ArtefactModel, codigo string) error {
+	// Buscar archivo por código
+	extensions := []string{".pdf", ".jpg", ".jpeg", ".png"}
+	baseDir := os.Getenv("BRUCH_FILES_BASE_DIR")
+	if baseDir == "" {
+		baseDir = "archivos_bruch"
+	}
+
+	// Patrones específicos para fichas históricas
+	patterns := []string{
+		codigo,
+		fmt.Sprintf("historica_%s", codigo),
+		fmt.Sprintf("%s_historica", codigo),
+		fmt.Sprintf("ficha_%s", codigo),
+		fmt.Sprintf("hst_%s", codigo),
+	}
+
+	for _, pattern := range patterns {
+		for _, ext := range extensions {
+			fullPath := filepath.Join(baseDir, pattern+ext)
+			if _, err := os.Stat(fullPath); err == nil {
+				return s.associateHistoricalRecordFromPath(artefact, fullPath)
+			}
+		}
+	}
+
+	return fmt.Errorf("ficha histórica no encontrada para código %s", codigo)
+}
+
+// associateINPLFromCode busca y asocia una ficha INPL usando el código numérico
+func (s *ArtefactService) associateINPLFromCode(artefact *models.ArtefactModel, codigo string) error {
+	// Buscar archivo por código
+	extensions := []string{".jpg", ".jpeg", ".png", ".gif", ".webp"}
+	baseDir := os.Getenv("BRUCH_FILES_BASE_DIR")
+	if baseDir == "" {
+		baseDir = "archivos_bruch"
+	}
+
+	// Patrones específicos para fichas INPL
+	patterns := []string{
+		codigo,
+		fmt.Sprintf("inpl_%s", codigo),
+		fmt.Sprintf("%s_inpl", codigo),
+		fmt.Sprintf("ficha_inpl_%s", codigo),
+	}
+
+	for _, pattern := range patterns {
+		for _, ext := range extensions {
+			fullPath := filepath.Join(baseDir, pattern+ext)
+			if _, err := os.Stat(fullPath); err == nil {
+				return s.associateINPLFromPath(artefact, fullPath)
+			}
+		}
+	}
+
+	return fmt.Errorf("ficha INPL no encontrada para código %s", codigo)
+}
+
+// associatePictureFromPath copia un archivo de imagen y lo asocia al artefacto
+func (s *ArtefactService) associatePictureFromPath(artefact *models.ArtefactModel, sourcePath string) error {
+	// Verificar si el archivo existe
+	if _, err := os.Stat(sourcePath); os.IsNotExist(err) {
+		return fmt.Errorf("archivo no encontrado: %s", sourcePath)
+	}
+
+	// Leer el archivo
+	sourceFile, err := os.Open(sourcePath)
+	if err != nil {
+		return fmt.Errorf("no se pudo abrir el archivo: %w", err)
+	}
+	defer sourceFile.Close()
+
+	// Obtener información del archivo
+	fileInfo, err := sourceFile.Stat()
+	if err != nil {
+		return fmt.Errorf("no se pudo obtener información del archivo: %w", err)
+	}
+
+	// Determinar content type
+	ext := strings.ToLower(filepath.Ext(sourcePath))
+	contentType := "image/jpeg"
+	switch ext {
+	case ".png":
+		contentType = "image/png"
+	case ".gif":
+		contentType = "image/gif"
+	case ".webp":
+		contentType = "image/webp"
+	}
+
+	// Crear directorio de destino
+	uploadDir := "uploads/pictures"
+	if err := os.MkdirAll(uploadDir, 0755); err != nil {
+		return fmt.Errorf("no se pudo crear directorio: %w", err)
+	}
+
+	// Generar nombre único
+	filename := fmt.Sprintf("artefact_%d_%d_%s", artefact.ID, time.Now().Unix(), filepath.Base(sourcePath))
+	destPath := filepath.Join(uploadDir, filename)
+
+	// Copiar archivo
+	destFile, err := os.Create(destPath)
+	if err != nil {
+		return fmt.Errorf("no se pudo crear archivo destino: %w", err)
+	}
+	defer destFile.Close()
+
+	if _, err := io.Copy(destFile, sourceFile); err != nil {
+		os.Remove(destPath)
+		return fmt.Errorf("no se pudo copiar archivo: %w", err)
+	}
+
+	// Crear registro en BD
+	picture := models.PictureModel{
+		ArtefactID:   artefact.ID,
+		Filename:     filename,
+		OriginalName: filepath.Base(sourcePath),
+		FilePath:     destPath,
+		ContentType:  contentType,
+		Size:         fileInfo.Size(),
+		CreatedAt:    time.Now(),
+		UpdatedAt:    time.Now(),
+	}
+
+	if err := s.SavePicture(&picture); err != nil {
+		os.Remove(destPath)
+		return fmt.Errorf("no se pudo guardar metadata: %w", err)
+	}
+
+	return nil
+}
+
+// associateHistoricalRecordFromPath copia un archivo de ficha histórica y lo asocia al artefacto
+func (s *ArtefactService) associateHistoricalRecordFromPath(artefact *models.ArtefactModel, sourcePath string) error {
+	// Verificar si el archivo existe
+	if _, err := os.Stat(sourcePath); os.IsNotExist(err) {
+		return fmt.Errorf("archivo no encontrado: %s", sourcePath)
+	}
+
+	// Leer el archivo
+	sourceFile, err := os.Open(sourcePath)
+	if err != nil {
+		return fmt.Errorf("no se pudo abrir el archivo: %w", err)
+	}
+	defer sourceFile.Close()
+
+	// Obtener información del archivo
+	fileInfo, err := sourceFile.Stat()
+	if err != nil {
+		return fmt.Errorf("no se pudo obtener información del archivo: %w", err)
+	}
+
+	// Determinar content type
+	ext := strings.ToLower(filepath.Ext(sourcePath))
+	contentType := "application/pdf"
+	if strings.HasPrefix(ext, ".jpg") || strings.HasPrefix(ext, ".jpeg") {
+		contentType = "image/jpeg"
+	} else if ext == ".png" {
+		contentType = "image/png"
+	}
+
+	// Crear directorio de destino
+	uploadDir := "uploads/historical_records"
+	if err := os.MkdirAll(uploadDir, 0755); err != nil {
+		return fmt.Errorf("no se pudo crear directorio: %w", err)
+	}
+
+	// Generar nombre único
+	filename := fmt.Sprintf("record_%d_%d_%s", artefact.ID, time.Now().Unix(), filepath.Base(sourcePath))
+	destPath := filepath.Join(uploadDir, filename)
+
+	// Copiar archivo
+	destFile, err := os.Create(destPath)
+	if err != nil {
+		return fmt.Errorf("no se pudo crear archivo destino: %w", err)
+	}
+	defer destFile.Close()
+
+	if _, err := io.Copy(destFile, sourceFile); err != nil {
+		os.Remove(destPath)
+		return fmt.Errorf("no se pudo copiar archivo: %w", err)
+	}
+
+	// Crear registro en BD
+	record := models.HistoricalRecordModel{
+		ArtefactID:   artefact.ID,
+		Filename:     filename,
+		OriginalName: filepath.Base(sourcePath),
+		FilePath:     destPath,
+		ContentType:  contentType,
+		Size:         fileInfo.Size(),
+		CreatedAt:    time.Now(),
+		UpdatedAt:    time.Now(),
+	}
+
+	if err := s.SaveHistoricalRecord(&record); err != nil {
+		os.Remove(destPath)
+		return fmt.Errorf("no se pudo guardar metadata: %w", err)
+	}
+
+	return nil
+}
+
+// associateINPLFromPath copia un archivo de ficha INPL y lo asocia al artefacto
+func (s *ArtefactService) associateINPLFromPath(artefact *models.ArtefactModel, sourcePath string) error {
+	// Verificar si el archivo existe
+	if _, err := os.Stat(sourcePath); os.IsNotExist(err) {
+		return fmt.Errorf("archivo no encontrado: %s", sourcePath)
+	}
+
+	// Leer el archivo
+	sourceFile, err := os.Open(sourcePath)
+	if err != nil {
+		return fmt.Errorf("no se pudo abrir el archivo: %w", err)
+	}
+	defer sourceFile.Close()
+
+	// Obtener información del archivo
+	fileInfo, err := sourceFile.Stat()
+	if err != nil {
+		return fmt.Errorf("no se pudo obtener información del archivo: %w", err)
+	}
+
+	// Determinar content type (INPL son imágenes)
+	ext := strings.ToLower(filepath.Ext(sourcePath))
+	contentType := "image/jpeg"
+	switch ext {
+	case ".png":
+		contentType = "image/png"
+	case ".gif":
+		contentType = "image/gif"
+	case ".webp":
+		contentType = "image/webp"
+	}
+
+	// Crear o obtener INPLClassifier para este artefacto
+	var inplClassifier models.INPLClassifierModel
+	if artefact.InplClassifierID != nil {
+		// Ya tiene un INPLClassifier, usarlo
+		if err := s.db.First(&inplClassifier, *artefact.InplClassifierID).Error; err != nil {
+			return fmt.Errorf("no se pudo encontrar INPLClassifier existente: %w", err)
+		}
+	} else {
+		// Crear nuevo INPLClassifier
+		if err := s.db.Create(&inplClassifier).Error; err != nil {
+			return fmt.Errorf("no se pudo crear INPLClassifier: %w", err)
+		}
+		// Asociar al artefacto
+		artefact.InplClassifierID = &inplClassifier.ID
+		if err := s.db.Model(artefact).Update("inpl_classifier_id", inplClassifier.ID).Error; err != nil {
+			return fmt.Errorf("no se pudo asociar INPLClassifier al artefacto: %w", err)
+		}
+	}
+
+	// Crear directorio de destino (usando estructura similar a INPLService)
+	uploadRoot := "uploads/inpl"
+	if envRoot := os.Getenv("INPL_UPLOAD_ROOT"); envRoot != "" {
+		uploadRoot = envRoot
+	}
+	dir := filepath.Join(uploadRoot, strconv.Itoa(inplClassifier.ID))
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("no se pudo crear directorio: %w", err)
+	}
+
+	// Generar nombre único
+	filename := fmt.Sprintf("ficha_%d_%d_%s", inplClassifier.ID, time.Now().Unix(), filepath.Base(sourcePath))
+	destPath := filepath.Join(dir, filename)
+
+	// Copiar archivo
+	destFile, err := os.Create(destPath)
+	if err != nil {
+		return fmt.Errorf("no se pudo crear archivo destino: %w", err)
+	}
+	defer destFile.Close()
+
+	if _, err := io.Copy(destFile, sourceFile); err != nil {
+		os.Remove(destPath)
+		return fmt.Errorf("no se pudo copiar archivo: %w", err)
+	}
+
+	// Crear registro en BD
+	ficha := models.INPLFicha{
+		INPLClassifierID: inplClassifier.ID,
+		Filename:         filename,
+		OriginalName:     filepath.Base(sourcePath),
+		FilePath:         destPath,
+		ContentType:      contentType,
+		Size:             fileInfo.Size(),
+		CreatedAt:        time.Now(),
+		UpdatedAt:        time.Now(),
+	}
+
+	if err := s.db.Create(&ficha).Error; err != nil {
+		os.Remove(destPath)
+		return fmt.Errorf("no se pudo guardar ficha INPL: %w", err)
+	}
+
+	return nil
 }

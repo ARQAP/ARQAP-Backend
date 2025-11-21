@@ -417,15 +417,10 @@ func (ac *ArtefactController) CreateArtefactWithMentions(c *gin.Context) {
 // ======================= RESUMENES (ENDPOINT NUEVO) =======================
 
 func (ac *ArtefactController) GetArtefactSummaries(c *gin.Context) {
-<<<<<<< HEAD
 	// Obtener query parameter shelfId si existe
 	shelfIdStr := c.Query("shelfId")
 	var shelfId *int
 	if shelfIdStr != "" {
-=======
-	var shelfId *int
-	if shelfIdStr := c.Query("shelfId"); shelfIdStr != "" {
->>>>>>> 1d4a55074754b5ea8e380ac4e25e79101d1cb3f3
 		parsedId, err := strconv.Atoi(shelfIdStr)
 		if err != nil {
 			c.JSON(400, gin.H{"error": "Invalid shelfId parameter"})
@@ -442,45 +437,45 @@ func (ac *ArtefactController) GetArtefactSummaries(c *gin.Context) {
 	c.JSON(200, summaries)
 }
 
-func (c *ArtefactController) ImportArtefactsFromExcel(ctx *gin.Context) {
-    file, err := ctx.FormFile("file")
-    if err != nil {
-        ctx.JSON(http.StatusBadRequest, gin.H{
-            "error": "no se recibió el archivo",
-            "detail": err.Error(),
-        })
-        return
-    }
+func (ac *ArtefactController) ImportArtefactsFromExcel(ctx *gin.Context) {
+	file, err := ctx.FormFile("file")
+	if err != nil {
+		ctx.JSON(http.StatusBadRequest, gin.H{
+			"error":  "no se recibió el archivo",
+			"detail": err.Error(),
+		})
+		return
+	}
 
-    f, err := file.Open()
-    if err != nil {
-        ctx.JSON(http.StatusBadRequest, gin.H{
-            "error": "no se pudo abrir el archivo",
-            "detail": err.Error(),
-        })
-        return
-    }
-    defer f.Close()
+	f, err := file.Open()
+	if err != nil {
+		ctx.JSON(http.StatusBadRequest, gin.H{
+			"error":  "no se pudo abrir el archivo",
+			"detail": err.Error(),
+		})
+		return
+	}
+	defer f.Close()
 
-    result, err := c.service.ImportArtefactsFromExcel(f)
-    if err != nil {
-        // 👇 manejar el caso en que result sea nil
-        if result != nil {
-            ctx.JSON(http.StatusBadRequest, gin.H{
-                "error":  err.Error(),
-                "errors": result.Errors,
-            })
-        } else {
-            ctx.JSON(http.StatusBadRequest, gin.H{
-                "error": err.Error(),
-            })
-        }
-        return
-    }
+	result, err := ac.service.ImportArtefactsFromExcel(f)
+	if err != nil {
+		// 👇 manejar el caso en que result sea nil
+		if result != nil {
+			ctx.JSON(http.StatusBadRequest, gin.H{
+				"error":  err.Error(),
+				"errors": result.Errors,
+			})
+		} else {
+			ctx.JSON(http.StatusBadRequest, gin.H{
+				"error": err.Error(),
+			})
+		}
+		return
+	}
 
-    ctx.JSON(http.StatusOK, gin.H{
-        "message":  "Importación completada",
-        "imported": result.Imported,
-        "errors":   result.Errors, // pueden ser warnings de filas puntuales
-    })
+	ctx.JSON(http.StatusOK, gin.H{
+		"message":  "Importación completada",
+		"imported": result.Imported,
+		"errors":   result.Errors, // pueden ser warnings de filas puntuales
+	})
 }
