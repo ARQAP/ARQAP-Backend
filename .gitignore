@@ -1,3 +1,11 @@
 .env
 /tmp
 /uploads
+
+# Credenciales de Google Drive
+/credentials
+*.json
+!go.mod
+!go.sum
+
+GOOGLE_DRIVE_SETUP.md

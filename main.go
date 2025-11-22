@@ -11,6 +11,7 @@ import (
 	"github.com/ARQAP/ARQAP-Backend/src/routes"
 	"github.com/ARQAP/ARQAP-Backend/src/seed"
 	"github.com/ARQAP/ARQAP-Backend/src/services"
+	"github.com/ARQAP/ARQAP-Backend/src/utils"
 	"github.com/gin-gonic/gin"
 )
 
@@ -46,6 +47,12 @@ func main() {
 
 	// Db seeding
 	seed.Seed(db)
+
+	// Inicializar servicio de Google Drive (si está configurado)
+	if err := utils.InitGoogleDriveService(); err != nil {
+		log.Printf("Advertencia: No se pudo inicializar Google Drive Service: %v", err)
+		log.Printf("Las descargas de Google Drive no estarán disponibles sin credenciales configuradas")
+	}
 
 	// Port and host setup
 	host := os.Getenv("SERVER_HOST")

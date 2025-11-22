@@ -214,4 +214,63 @@ El formato del encabezado debe ser exactamente el siguiente:
 
 #### 🏢 Ubicación Física
 
--   **CRUD** 
+-   **CRUD**
+
+---
+
+## 🔗 Integración con Google Drive API
+
+El sistema puede descargar archivos desde Google Drive automáticamente durante la importación de artefactos desde Excel. Para habilitar esta funcionalidad, es necesario configurar las credenciales de Google Drive API.
+
+### Configuración de Google Drive API
+
+#### 1. Crear un Service Account en Google Cloud
+
+1. Ve a [Google Cloud Console](https://console.cloud.google.com/)
+2. Crea un nuevo proyecto o selecciona uno existente
+3. Habilita la **Google Drive API** para el proyecto
+4. Ve a **IAM & Admin** > **Service Accounts**
+5. Crea un nuevo Service Account
+6. Descarga el archivo JSON de credenciales
+
+#### 2. Compartir archivos/carpetas con el Service Account
+
+Para que el Service Account pueda acceder a los archivos de Google Drive:
+
+1. Abre el archivo JSON de credenciales
+2. Copia el **email del Service Account** (campo `client_email`)
+3. En Google Drive, comparte los archivos/carpetas con ese email (dar permisos de "Lector")
+
+#### 3. Configurar las credenciales en el backend
+
+Tienes dos opciones:
+
+**Opción A: Usar archivo de credenciales (recomendado para desarrollo local)**
+
+```bash
+export GOOGLE_DRIVE_CREDENTIALS_PATH="/ruta/al/archivo/credentials.json"
+```
+
+**Opción B: Usar JSON como variable de entorno (recomendado para producción/Docker)**
+
+```bash
+export GOOGLE_DRIVE_CREDENTIALS_JSON='{"type":"service_account","project_id":"...","private_key_id":"...","private_key":"...","client_email":"...","client_id":"...","auth_uri":"...","token_uri":"...","auth_provider_x509_cert_url":"...","client_x509_cert_url":"..."}'
+```
+
+#### 4. Agregar al docker-compose.yml (si usas Docker)
+
+```yaml
+services:
+  app:
+    environment:
+      - GOOGLE_DRIVE_CREDENTIALS_PATH=/app/credentials.json
+    volumes:
+      - ./credentials.json:/app/credentials.json:ro
+```
+
+### Notas importantes
+
+- El Service Account necesita permisos de **lectura** en los archivos/carpetas de Google Drive
+- Los archivos deben estar compartidos con el email del Service Account
+- Si no se configuran las credenciales, el sistema intentará usar descarga HTTP directa (puede fallar para archivos grandes)
+- El sistema detecta automáticamente URLs de Google Drive y usa la API cuando está disponible 

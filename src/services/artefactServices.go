@@ -4,6 +4,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
+	"net/http"
+	"net/http/cookiejar"
+	urlpkg "net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -14,6 +18,7 @@ import (
 
 	"github.com/ARQAP/ARQAP-Backend/src/dtos"
 	"github.com/ARQAP/ARQAP-Backend/src/models"
+	"github.com/ARQAP/ARQAP-Backend/src/utils"
 	excelize "github.com/xuri/excelize/v2"
 	"gorm.io/gorm"
 )
@@ -484,6 +489,8 @@ func (s *ArtefactService) GetArtefactSummaries(shelfId *int) ([]dtos.ArtefactSum
 }
 
 func (s *ArtefactService) ImportArtefactsFromExcel(r io.Reader) (*ImportResult, error) {
+	log.Println("[IMPORT] Iniciando importación de artefactos desde Excel...")
+
 	f, err := excelize.OpenReader(r)
 	if err != nil {
 		return nil, fmt.Errorf("archivo excel inválido: %w", err)
@@ -495,20 +502,21 @@ func (s *ArtefactService) ImportArtefactsFromExcel(r io.Reader) (*ImportResult, 
 		return nil, fmt.Errorf("no se pudo leer la hoja BASE BRUCH DIEGO: %w", err)
 	}
 
+	log.Printf("[IMPORT] Total de filas en BASE BRUCH DIEGO: %d", len(rows))
 	result := &ImportResult{Imported: 0, Errors: []string{}}
 
 	// ===============================
 	// 0) Leer hoja TOPOGRÁFICO y crear mapa código -> archivos
 	// ===============================
-	topoRows, err := f.GetRows("TOPOGRÁFICO")
+	_, err = f.GetRows("TOPOGRÁFICO")
 	if err != nil {
 		// Si no existe la hoja, continuamos sin asociar archivos
 		result.Errors = append(result.Errors, "Advertencia: no se encontró la hoja TOPOGRÁFICO, se importarán artefactos sin archivos asociados")
 	}
 
 	// Mapa: código numérico -> {foto, ficha histórica, ficha INPL}
-	// Estructura real: Col A = ACLARACIONES (texto), Col B = FOTO PIEZA (código), Col C = FICHA INPL (código), Col D = FICHA HST. (código)
-	// Los códigos en B, C y D son el mismo número, lo usamos para construir las rutas de archivos
+	// Estructura real: Col A = ACLARACIONES (texto), Col B = FOTO PIEZA (código/hipervínculo), Col C = FICHA INPL (código/hipervínculo), Col D = FICHA HST. (código/hipervínculo)
+	// Los hipervínculos en B, C y D apuntan a los archivos reales
 	topoMap := make(map[string]struct {
 		foto           string
 		fichaHistorica string
@@ -516,43 +524,66 @@ func (s *ArtefactService) ImportArtefactsFromExcel(r io.Reader) (*ImportResult, 
 	})
 
 	if err == nil {
-		for _, topoRow := range topoRows {
-			// Saltar filas vacías o sin código en columna B
-			if len(topoRow) < 2 || strings.TrimSpace(topoRow[1]) == "" {
-				continue
-			}
+		log.Println("[IMPORT] Leyendo hoja TOPOGRÁFICO para asociar archivos...")
+		// Leer hipervínculos de las celdas en lugar de solo el texto
+		sheetName := "TOPOGRÁFICO"
+		rows, err := f.GetRows(sheetName)
+		if err == nil {
+			topoCount := 0
+			for rowIdx, row := range rows {
+				// Saltar encabezados (primera fila) y filas vacías
+				if rowIdx < 2 || len(row) < 2 {
+					continue
+				}
 
-			// Columna B (índice 1) contiene el código numérico
-			codigo := strings.TrimSpace(topoRow[1])
+				// Obtener código de la columna B (índice 1, fila rowIdx+1 porque GetRows es 0-indexed pero las celdas son 1-indexed)
+				cellB := fmt.Sprintf("B%d", rowIdx+1)
+				codigo, _ := f.GetCellValue(sheetName, cellB)
+				codigo = strings.TrimSpace(codigo)
 
-			// Validar que el código sea numérico (puede tener texto como "Estante A" en col A)
-			if codigo == "" {
-				continue
-			}
+				// Saltar si no hay código o es texto descriptivo
+				if codigo == "" || !regexp.MustCompile(`^\d+$`).MatchString(codigo) {
+					continue
+				}
 
-			// Los códigos en B, C y D deberían ser iguales, pero usamos B como referencia
-			// Si C y D tienen valores diferentes, los usamos; si no, usamos el código de B
-			fotoCodigo := codigo
-			inplCodigo := codigo
-			historicaCodigo := codigo
+				// Extraer hipervínculos de las celdas B, C y D
+				fotoPath := ""
+				inplPath := ""
+				historicaPath := ""
 
-			if len(topoRow) > 2 && strings.TrimSpace(topoRow[2]) != "" {
-				inplCodigo = strings.TrimSpace(topoRow[2])
-			}
-			if len(topoRow) > 3 && strings.TrimSpace(topoRow[3]) != "" {
-				historicaCodigo = strings.TrimSpace(topoRow[3])
-			}
+				// Columna B - Foto
+				cellBHyperlink, target, _ := f.GetCellHyperLink(sheetName, cellB)
+				if cellBHyperlink && target != "" {
+					fotoPath = target
+				}
 
-			// Guardamos los códigos (luego se usarán para construir rutas de archivos)
-			topoMap[codigo] = struct {
-				foto           string
-				fichaHistorica string
-				fichaINPL      string
-			}{
-				foto:           fotoCodigo,
-				fichaHistorica: historicaCodigo,
-				fichaINPL:      inplCodigo,
+				// Columna C - INPL
+				cellC := fmt.Sprintf("C%d", rowIdx+1)
+				cellCHyperlink, target, _ := f.GetCellHyperLink(sheetName, cellC)
+				if cellCHyperlink && target != "" {
+					inplPath = target
+				}
+
+				// Columna D - Histórica
+				cellD := fmt.Sprintf("D%d", rowIdx+1)
+				cellDHyperlink, target, _ := f.GetCellHyperLink(sheetName, cellD)
+				if cellDHyperlink && target != "" {
+					historicaPath = target
+				}
+
+				// Guardar en el mapa
+				topoMap[codigo] = struct {
+					foto           string
+					fichaHistorica string
+					fichaINPL      string
+				}{
+					foto:           fotoPath,
+					fichaHistorica: historicaPath,
+					fichaINPL:      inplPath,
+				}
+				topoCount++
 			}
+			log.Printf("[IMPORT] Procesados %d códigos en hoja TOPOGRÁFICO", topoCount)
 		}
 	}
 
@@ -737,9 +768,12 @@ func (s *ArtefactService) ImportArtefactsFromExcel(r io.Reader) (*ImportResult, 
 		}
 
 		if err := s.db.Create(&artefact).Error; err != nil {
+			log.Printf("[IMPORT] ERROR en fila %d: %v", i+1, err)
 			result.Errors = append(result.Errors, fmt.Sprintf("Fila %d: %v", i+1, err))
 			continue
 		}
+
+		log.Printf("[IMPORT] Artefacto creado: %s (ID: %d)", name, artefact.ID)
 
 		// ===============================
 		// 3.3. Asociar archivos desde hoja TOPOGRÁFICO
@@ -750,24 +784,56 @@ func (s *ArtefactService) ImportArtefactsFromExcel(r io.Reader) (*ImportResult, 
 		if len(matches) > 1 && len(topoMap) > 0 {
 			codigoNum := matches[1]
 			if topoData, found := topoMap[codigoNum]; found {
-				// Asociar foto usando el código numérico
+				// Asociar foto - si hay ruta directa la usamos, sino buscamos por código
 				if topoData.foto != "" {
-					if err := s.associatePictureFromCode(&artefact, topoData.foto); err != nil {
-						result.Errors = append(result.Errors, fmt.Sprintf("Fila %d: error asociando foto: %v", i+1, err))
+					if strings.HasPrefix(topoData.foto, "http://") || strings.HasPrefix(topoData.foto, "https://") || strings.Contains(topoData.foto, string(filepath.Separator)) {
+						// Es una ruta de archivo o URL
+						log.Printf("[IMPORT] Descargando foto para %s desde: %s", name, topoData.foto)
+						if err := s.associatePictureFromPath(&artefact, topoData.foto); err != nil {
+							log.Printf("[IMPORT] ERROR asociando foto para %s: %v", name, err)
+							result.Errors = append(result.Errors, fmt.Sprintf("Fila %d: error asociando foto: %v", i+1, err))
+						} else {
+							log.Printf("[IMPORT] Foto asociada exitosamente para %s", name)
+						}
+					} else {
+						// Es solo un código, buscar archivo
+						if err := s.associatePictureFromCode(&artefact, topoData.foto); err != nil {
+							result.Errors = append(result.Errors, fmt.Sprintf("Fila %d: error asociando foto: %v", i+1, err))
+						}
 					}
 				}
 
-				// Asociar ficha histórica usando el código numérico
+				// Asociar ficha histórica
 				if topoData.fichaHistorica != "" {
-					if err := s.associateHistoricalRecordFromCode(&artefact, topoData.fichaHistorica); err != nil {
-						result.Errors = append(result.Errors, fmt.Sprintf("Fila %d: error asociando ficha histórica: %v", i+1, err))
+					if strings.HasPrefix(topoData.fichaHistorica, "http://") || strings.HasPrefix(topoData.fichaHistorica, "https://") || strings.Contains(topoData.fichaHistorica, string(filepath.Separator)) {
+						log.Printf("[IMPORT] Descargando ficha histórica para %s desde: %s", name, topoData.fichaHistorica)
+						if err := s.associateHistoricalRecordFromPath(&artefact, topoData.fichaHistorica); err != nil {
+							log.Printf("[IMPORT] ERROR asociando ficha histórica para %s: %v", name, err)
+							result.Errors = append(result.Errors, fmt.Sprintf("Fila %d: error asociando ficha histórica: %v", i+1, err))
+						} else {
+							log.Printf("[IMPORT] Ficha histórica asociada exitosamente para %s", name)
+						}
+					} else {
+						if err := s.associateHistoricalRecordFromCode(&artefact, topoData.fichaHistorica); err != nil {
+							result.Errors = append(result.Errors, fmt.Sprintf("Fila %d: error asociando ficha histórica: %v", i+1, err))
+						}
 					}
 				}
 
-				// Asociar ficha INPL usando el código numérico
+				// Asociar ficha INPL
 				if topoData.fichaINPL != "" {
-					if err := s.associateINPLFromCode(&artefact, topoData.fichaINPL); err != nil {
-						result.Errors = append(result.Errors, fmt.Sprintf("Fila %d: error asociando ficha INPL: %v", i+1, err))
+					if strings.HasPrefix(topoData.fichaINPL, "http://") || strings.HasPrefix(topoData.fichaINPL, "https://") || strings.Contains(topoData.fichaINPL, string(filepath.Separator)) {
+						log.Printf("[IMPORT] Descargando ficha INPL para %s desde: %s", name, topoData.fichaINPL)
+						if err := s.associateINPLFromPath(&artefact, topoData.fichaINPL); err != nil {
+							log.Printf("[IMPORT] ERROR asociando ficha INPL para %s: %v", name, err)
+							result.Errors = append(result.Errors, fmt.Sprintf("Fila %d: error asociando ficha INPL: %v", i+1, err))
+						} else {
+							log.Printf("[IMPORT] Ficha INPL asociada exitosamente para %s", name)
+						}
+					} else {
+						if err := s.associateINPLFromCode(&artefact, topoData.fichaINPL); err != nil {
+							result.Errors = append(result.Errors, fmt.Sprintf("Fila %d: error asociando ficha INPL: %v", i+1, err))
+						}
 					}
 				}
 			}
@@ -777,6 +843,24 @@ func (s *ArtefactService) ImportArtefactsFromExcel(r io.Reader) (*ImportResult, 
 	}
 
 	s.invalidateCache("all_artefacts")
+
+	log.Printf("[IMPORT] ========================================")
+	log.Printf("[IMPORT] Importación completada")
+	log.Printf("[IMPORT] Artefactos importados: %d", result.Imported)
+	log.Printf("[IMPORT] Errores encontrados: %d", len(result.Errors))
+	if len(result.Errors) > 0 {
+		log.Printf("[IMPORT] Primeros 5 errores:")
+		for i, err := range result.Errors {
+			if i >= 5 {
+				break
+			}
+			log.Printf("[IMPORT]   - %s", err)
+		}
+		if len(result.Errors) > 5 {
+			log.Printf("[IMPORT]   ... y %d errores más", len(result.Errors)-5)
+		}
+	}
+	log.Printf("[IMPORT] ========================================")
 
 	if result.Imported == 0 && len(result.Errors) > 0 {
 		return result, fmt.Errorf("no se pudo importar ninguna pieza")
@@ -788,6 +872,364 @@ func (s *ArtefactService) ImportArtefactsFromExcel(r io.Reader) (*ImportResult, 
 // ===============================
 // Funciones auxiliares para asociar archivos
 // ===============================
+
+// min retorna el mínimo de dos enteros
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+// downloadFileFromURL descarga un archivo desde una URL y lo guarda temporalmente
+// Retorna la ruta del archivo temporal y el nombre original del archivo (si se pudo determinar)
+func downloadFileFromURL(url string) (string, string, error) {
+	originalURL := url
+	log.Printf("[DOWNLOAD] Iniciando descarga desde: %s", originalURL)
+
+	// Si es una URL de Google Drive, usar la API
+	if utils.IsGoogleDriveURL(url) {
+		log.Printf("[DOWNLOAD] Detectada URL de Google Drive, usando API...")
+
+		// Extraer ID del archivo
+		fileID, err := utils.ExtractFileIDFromURL(url)
+		if err != nil {
+			return "", "", fmt.Errorf("error extrayendo ID de archivo: %w", err)
+		}
+
+		// Descargar usando la API
+		fileBody, filename, err := utils.DownloadFileFromGoogleDrive(fileID)
+		if err != nil {
+			return "", "", fmt.Errorf("error descargando archivo desde Google Drive API: %w", err)
+		}
+		defer fileBody.Close()
+
+		// Crear archivo temporal
+		tmpFile, err := os.CreateTemp("", "download_*")
+		if err != nil {
+			return "", "", fmt.Errorf("error creando archivo temporal: %w", err)
+		}
+		defer tmpFile.Close()
+
+		// Copiar contenido al archivo temporal
+		_, err = io.Copy(tmpFile, fileBody)
+		if err != nil {
+			os.Remove(tmpFile.Name())
+			return "", "", fmt.Errorf("error copiando contenido: %w", err)
+		}
+
+		log.Printf("[DOWNLOAD] Archivo descargado exitosamente: %s", filename)
+		return tmpFile.Name(), filename, nil
+	}
+
+	// Crear cliente HTTP con timeout y cookies para mantener sesión
+	jar, _ := cookiejar.New(nil)
+	client := &http.Client{
+		Timeout: 30 * time.Second,
+		Jar:     jar,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			// Seguir redirecciones automáticamente
+			return nil
+		},
+	}
+
+	// Descargar el archivo
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return "", "", fmt.Errorf("error creando request: %w", err)
+	}
+
+	// Agregar headers para evitar bloqueos
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+
+	log.Printf("[DOWNLOAD] Realizando petición HTTP...")
+	resp, err := client.Do(req)
+	if err != nil {
+		log.Printf("[DOWNLOAD] ERROR en petición HTTP: %v", err)
+		return "", "", fmt.Errorf("error descargando archivo: %w", err)
+	}
+	defer resp.Body.Close()
+
+	log.Printf("[DOWNLOAD] Respuesta recibida: código %d, Content-Type: %s", resp.StatusCode, resp.Header.Get("Content-Type"))
+
+	// Google Drive puede devolver 200 pero con HTML de confirmación para archivos grandes
+	if resp.StatusCode != http.StatusOK {
+		log.Printf("[DOWNLOAD] ERROR: código de estado %d", resp.StatusCode)
+		return "", "", fmt.Errorf("error descargando archivo: código de estado %d", resp.StatusCode)
+	}
+
+	// Verificar content-type para detectar si Google Drive devolvió HTML en lugar del archivo
+	contentType := resp.Header.Get("Content-Type")
+	if strings.Contains(contentType, "text/html") && strings.Contains(url, "drive.google.com") {
+		log.Printf("[DOWNLOAD] Google Drive devolvió HTML (página de confirmación), intentando extraer token...")
+
+		// Leer el body HTML
+		bodyBytes, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return "", "", fmt.Errorf("error leyendo respuesta HTML: %w", err)
+		}
+		bodyStr := string(bodyBytes)
+
+		// Buscar el token de confirmación en el HTML
+		// Google Drive usa diferentes patrones, intentamos varios
+		var confirmToken string
+
+		// Patrón 1: name="confirm" value="TOKEN" (formulario)
+		re1 := regexp.MustCompile(`name=["']confirm["']\s+value=["']([^"']+)["']`)
+		matches1 := re1.FindStringSubmatch(bodyStr)
+		if len(matches1) > 1 {
+			confirmToken = matches1[1]
+			log.Printf("[DOWNLOAD] Token encontrado (patrón 1): %s", confirmToken[:min(20, len(confirmToken))])
+		}
+
+		// Patrón 2: id="download-form" con input hidden
+		if confirmToken == "" {
+			re2 := regexp.MustCompile(`id=["']download-form["'][^>]*>.*?<input[^>]*name=["']confirm["'][^>]*value=["']([^"']+)["']`)
+			matches2 := re2.FindStringSubmatch(bodyStr)
+			if len(matches2) > 1 {
+				confirmToken = matches2[1]
+				log.Printf("[DOWNLOAD] Token encontrado (patrón 2): %s", confirmToken[:min(20, len(confirmToken))])
+			}
+		}
+
+		// Patrón 3: confirm=TOKEN en la URL de descarga (href)
+		if confirmToken == "" {
+			re3 := regexp.MustCompile(`href=["']([^"']*uc[^"']*[?&]confirm=([^"']+)[^"']*)["']`)
+			matches3 := re3.FindStringSubmatch(bodyStr)
+			if len(matches3) > 2 {
+				confirmToken = matches3[2]
+				log.Printf("[DOWNLOAD] Token encontrado (patrón 3): %s", confirmToken[:min(20, len(confirmToken))])
+			}
+		}
+
+		// Patrón 4: window.location con confirm
+		if confirmToken == "" {
+			re4 := regexp.MustCompile(`window\.location\s*=\s*["']([^"']*[?&]confirm=([^"']+)[^"']*)["']`)
+			matches4 := re4.FindStringSubmatch(bodyStr)
+			if len(matches4) > 2 {
+				confirmToken = matches4[2]
+				log.Printf("[DOWNLOAD] Token encontrado (patrón 4): %s", confirmToken[:min(20, len(confirmToken))])
+			}
+		}
+
+		// Patrón 5: /uc?export=download&id=FILE_ID&confirm=TOKEN
+		if confirmToken == "" {
+			re5 := regexp.MustCompile(`/uc\?export=download[^"']*[&?]confirm=([a-zA-Z0-9_-]+)`)
+			matches5 := re5.FindStringSubmatch(bodyStr)
+			if len(matches5) > 1 {
+				confirmToken = matches5[1]
+				log.Printf("[DOWNLOAD] Token encontrado (patrón 5): %s", confirmToken[:min(20, len(confirmToken))])
+			}
+		}
+
+		// Patrón 6: Buscar cualquier input con name="confirm"
+		if confirmToken == "" {
+			re6 := regexp.MustCompile(`<input[^>]*name=["']confirm["'][^>]*value=["']([^"']+)["']`)
+			matches6 := re6.FindStringSubmatch(bodyStr)
+			if len(matches6) > 1 {
+				confirmToken = matches6[1]
+				log.Printf("[DOWNLOAD] Token encontrado (patrón 6): %s", confirmToken[:min(20, len(confirmToken))])
+			}
+		}
+
+		if confirmToken == "" {
+			log.Printf("[DOWNLOAD] No se pudo extraer token de confirmación del HTML")
+			log.Printf("[DOWNLOAD] Guardando muestra del HTML para debug (primeros 500 caracteres)...")
+			htmlPreview := bodyStr
+			if len(htmlPreview) > 500 {
+				htmlPreview = htmlPreview[:500]
+			}
+			log.Printf("[DOWNLOAD] HTML preview: %s", htmlPreview)
+
+			// Intentar con confirm=t como fallback
+			log.Printf("[DOWNLOAD] Intentando con confirm=t...")
+			parsedURL, err := urlpkg.Parse(url)
+			if err == nil {
+				q := parsedURL.Query()
+				q.Set("confirm", "t")
+				parsedURL.RawQuery = q.Encode()
+				url = parsedURL.String()
+
+				// Hacer nueva petición con confirm=t
+				req2, err := http.NewRequest("GET", url, nil)
+				if err != nil {
+					return "", "", fmt.Errorf("error creando request con confirm: %w", err)
+				}
+				req2.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+				// Copiar cookies de la primera petición
+				for _, cookie := range client.Jar.Cookies(parsedURL) {
+					req2.AddCookie(cookie)
+				}
+
+				resp2, err := client.Do(req2)
+				if err != nil {
+					return "", "", fmt.Errorf("error en segunda petición: %w", err)
+				}
+				defer resp2.Body.Close()
+
+				if resp2.StatusCode != http.StatusOK {
+					return "", "", fmt.Errorf("error en segunda petición: código %d", resp2.StatusCode)
+				}
+
+				// Verificar si ahora es el archivo real
+				contentType2 := resp2.Header.Get("Content-Type")
+				if strings.Contains(contentType2, "text/html") {
+					// Intentar una vez más leyendo el body para ver si hay un token
+					bodyBytes2, _ := io.ReadAll(resp2.Body)
+					bodyStr2 := string(bodyBytes2)
+
+					// Buscar token nuevamente con todos los patrones
+					reFinal := regexp.MustCompile(`name=["']confirm["']\s+value=["']([^"']+)["']`)
+					matchesFinal := reFinal.FindStringSubmatch(bodyStr2)
+					if len(matchesFinal) > 1 {
+						confirmToken = matchesFinal[1]
+						log.Printf("[DOWNLOAD] Token encontrado en segunda respuesta, continuando con POST...")
+						// Continuar con el flujo POST más abajo (salir del if y usar el token)
+					} else {
+						return "", "", fmt.Errorf("google drive aún requiere confirmación después de intentar confirm=t")
+					}
+				} else {
+					// Usar la nueva respuesta - archivo descargado exitosamente
+					resp = resp2
+					contentType = contentType2
+					log.Printf("[DOWNLOAD] Segunda petición exitosa con confirm=t")
+					// Salir del bloque de confirmación y continuar con el procesamiento normal
+					confirmToken = "" // Marcar que ya no necesitamos POST
+				}
+			} else {
+				return "", "", fmt.Errorf("no se pudo parsear URL para agregar confirm: %w", err)
+			}
+		}
+
+		// Si tenemos un token (ya sea del HTML original o de la segunda respuesta), hacer POST
+		if confirmToken != "" {
+			log.Printf("[DOWNLOAD] Token de confirmación encontrado, haciendo petición POST...")
+
+			// Hacer petición POST con el token
+			parsedURL, err := urlpkg.Parse(url)
+			if err != nil {
+				return "", "", fmt.Errorf("error parseando URL: %w", err)
+			}
+
+			// Crear formulario con el token
+			formData := urlpkg.Values{}
+			formData.Set("confirm", confirmToken)
+
+			req2, err := http.NewRequest("POST", parsedURL.String(), strings.NewReader(formData.Encode()))
+			if err != nil {
+				return "", "", fmt.Errorf("error creando request POST: %w", err)
+			}
+			req2.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+			req2.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+			resp2, err := client.Do(req2)
+			if err != nil {
+				return "", "", fmt.Errorf("error en petición POST: %w", err)
+			}
+			defer resp2.Body.Close()
+
+			if resp2.StatusCode != http.StatusOK {
+				return "", "", fmt.Errorf("error en petición POST: código %d", resp2.StatusCode)
+			}
+
+			// Verificar si ahora es el archivo real
+			contentType2 := resp2.Header.Get("Content-Type")
+			if strings.Contains(contentType2, "text/html") {
+				return "", "", fmt.Errorf("google drive aún requiere confirmación después de enviar token")
+			}
+
+			// Usar la nueva respuesta
+			resp = resp2
+			contentType = contentType2
+			log.Printf("[DOWNLOAD] Petición POST exitosa, descargando archivo...")
+		}
+	}
+
+	// Intentar extraer el nombre del archivo del header Content-Disposition
+	var filename string
+	contentDisposition := resp.Header.Get("Content-Disposition")
+	if contentDisposition != "" {
+		// Buscar filename= o filename*=
+		if idx := strings.Index(contentDisposition, "filename="); idx != -1 {
+			filename = contentDisposition[idx+9:]
+			// Remover comillas si las hay
+			filename = strings.Trim(filename, "\"'")
+			// Si tiene encoding (filename*=), intentar decodificar
+			filename = strings.TrimPrefix(filename, "UTF-8''")
+		}
+	}
+
+	// Si no se pudo obtener del header, intentar de la URL
+	if filename == "" {
+		parsedURL, err := urlpkg.Parse(originalURL)
+		if err == nil {
+			// Intentar obtener de la query string
+			if name := parsedURL.Query().Get("name"); name != "" {
+				filename = name
+			} else {
+				// Obtener del path
+				path := parsedURL.Path
+				if path != "" && path != "/" {
+					filename = filepath.Base(path)
+				}
+			}
+		}
+	}
+
+	// Determinar extensión basada en Content-Type si no se tiene
+	ext := filepath.Ext(filename)
+	if ext == "" {
+		switch {
+		case strings.Contains(contentType, "image/jpeg") || strings.Contains(contentType, "image/jpg"):
+			ext = ".jpg"
+		case strings.Contains(contentType, "image/png"):
+			ext = ".png"
+		case strings.Contains(contentType, "image/gif"):
+			ext = ".gif"
+		case strings.Contains(contentType, "image/webp"):
+			ext = ".webp"
+		case strings.Contains(contentType, "application/pdf"):
+			ext = ".pdf"
+		case strings.Contains(contentType, "application/zip"):
+			ext = ".zip"
+		default:
+			ext = ".bin"
+		}
+	}
+
+	// Si no tenemos nombre, usar uno genérico con la extensión
+	if filename == "" {
+		filename = "download" + ext
+	} else if filepath.Ext(filename) == "" {
+		// Si el nombre no tiene extensión, agregarla
+		filename = filename + ext
+	}
+
+	// Crear archivo temporal con la extensión correcta
+	tmpFile, err := os.CreateTemp("", "download_*"+ext)
+	if err != nil {
+		return "", "", fmt.Errorf("error creando archivo temporal: %w", err)
+	}
+
+	// Copiar contenido
+	log.Printf("[DOWNLOAD] Copiando contenido a archivo temporal...")
+	if _, err := io.Copy(tmpFile, resp.Body); err != nil {
+		tmpFile.Close()
+		os.Remove(tmpFile.Name())
+		log.Printf("[DOWNLOAD] ERROR copiando contenido: %v", err)
+		return "", "", fmt.Errorf("error copiando archivo: %w", err)
+	}
+
+	// Cerrar el archivo para asegurar que se escribió todo
+	if err := tmpFile.Close(); err != nil {
+		os.Remove(tmpFile.Name())
+		log.Printf("[DOWNLOAD] ERROR cerrando archivo: %v", err)
+		return "", "", fmt.Errorf("error cerrando archivo temporal: %w", err)
+	}
+
+	log.Printf("[DOWNLOAD] Descarga completada: %s (nombre: %s)", tmpFile.Name(), filename)
+	return tmpFile.Name(), filename, nil
+}
 
 // findFileByCode busca un archivo por código numérico en un directorio base
 // Intenta diferentes patrones de nombres: codigo.ext, foto_codigo.ext, codigo_foto.ext, etc.
@@ -895,13 +1337,35 @@ func (s *ArtefactService) associateINPLFromCode(artefact *models.ArtefactModel, 
 
 // associatePictureFromPath copia un archivo de imagen y lo asocia al artefacto
 func (s *ArtefactService) associatePictureFromPath(artefact *models.ArtefactModel, sourcePath string) error {
-	// Verificar si el archivo existe
-	if _, err := os.Stat(sourcePath); os.IsNotExist(err) {
-		return fmt.Errorf("archivo no encontrado: %s", sourcePath)
+	// Si es una URL, descargarla primero
+	var actualPath string
+	var originalFilename string
+	var shouldDeleteTemp bool
+
+	if strings.HasPrefix(sourcePath, "http://") || strings.HasPrefix(sourcePath, "https://") {
+		downloadedPath, filename, err := downloadFileFromURL(sourcePath)
+		if err != nil {
+			return fmt.Errorf("error descargando archivo desde URL: %w", err)
+		}
+		actualPath = downloadedPath
+		originalFilename = filename
+		shouldDeleteTemp = true
+		defer func() {
+			if shouldDeleteTemp {
+				os.Remove(actualPath)
+			}
+		}()
+	} else {
+		actualPath = sourcePath
+		originalFilename = filepath.Base(sourcePath)
+		// Verificar si el archivo existe
+		if _, err := os.Stat(actualPath); os.IsNotExist(err) {
+			return fmt.Errorf("archivo no encontrado: %s", actualPath)
+		}
 	}
 
 	// Leer el archivo
-	sourceFile, err := os.Open(sourcePath)
+	sourceFile, err := os.Open(actualPath)
 	if err != nil {
 		return fmt.Errorf("no se pudo abrir el archivo: %w", err)
 	}
@@ -913,8 +1377,11 @@ func (s *ArtefactService) associatePictureFromPath(artefact *models.ArtefactMode
 		return fmt.Errorf("no se pudo obtener información del archivo: %w", err)
 	}
 
-	// Determinar content type
-	ext := strings.ToLower(filepath.Ext(sourcePath))
+	// Determinar content type basado en la extensión del archivo original
+	ext := strings.ToLower(filepath.Ext(originalFilename))
+	if ext == "" {
+		ext = strings.ToLower(filepath.Ext(actualPath))
+	}
 	contentType := "image/jpeg"
 	switch ext {
 	case ".png":
@@ -931,8 +1398,8 @@ func (s *ArtefactService) associatePictureFromPath(artefact *models.ArtefactMode
 		return fmt.Errorf("no se pudo crear directorio: %w", err)
 	}
 
-	// Generar nombre único
-	filename := fmt.Sprintf("artefact_%d_%d_%s", artefact.ID, time.Now().Unix(), filepath.Base(sourcePath))
+	// Generar nombre único usando el nombre original del archivo
+	filename := fmt.Sprintf("artefact_%d_%d_%s", artefact.ID, time.Now().Unix(), originalFilename)
 	destPath := filepath.Join(uploadDir, filename)
 
 	// Copiar archivo
@@ -951,7 +1418,7 @@ func (s *ArtefactService) associatePictureFromPath(artefact *models.ArtefactMode
 	picture := models.PictureModel{
 		ArtefactID:   artefact.ID,
 		Filename:     filename,
-		OriginalName: filepath.Base(sourcePath),
+		OriginalName: originalFilename,
 		FilePath:     destPath,
 		ContentType:  contentType,
 		Size:         fileInfo.Size(),
@@ -964,18 +1431,42 @@ func (s *ArtefactService) associatePictureFromPath(artefact *models.ArtefactMode
 		return fmt.Errorf("no se pudo guardar metadata: %w", err)
 	}
 
+	// Si descargamos un archivo temporal, marcarlo para no eliminarlo (ya se copió)
+	shouldDeleteTemp = false
 	return nil
 }
 
 // associateHistoricalRecordFromPath copia un archivo de ficha histórica y lo asocia al artefacto
 func (s *ArtefactService) associateHistoricalRecordFromPath(artefact *models.ArtefactModel, sourcePath string) error {
-	// Verificar si el archivo existe
-	if _, err := os.Stat(sourcePath); os.IsNotExist(err) {
-		return fmt.Errorf("archivo no encontrado: %s", sourcePath)
+	// Si es una URL, descargarla primero
+	var actualPath string
+	var originalFilename string
+	var shouldDeleteTemp bool
+
+	if strings.HasPrefix(sourcePath, "http://") || strings.HasPrefix(sourcePath, "https://") {
+		downloadedPath, filename, err := downloadFileFromURL(sourcePath)
+		if err != nil {
+			return fmt.Errorf("error descargando archivo desde URL: %w", err)
+		}
+		actualPath = downloadedPath
+		originalFilename = filename
+		shouldDeleteTemp = true
+		defer func() {
+			if shouldDeleteTemp {
+				os.Remove(actualPath)
+			}
+		}()
+	} else {
+		actualPath = sourcePath
+		originalFilename = filepath.Base(sourcePath)
+		// Verificar si el archivo existe
+		if _, err := os.Stat(actualPath); os.IsNotExist(err) {
+			return fmt.Errorf("archivo no encontrado: %s", actualPath)
+		}
 	}
 
 	// Leer el archivo
-	sourceFile, err := os.Open(sourcePath)
+	sourceFile, err := os.Open(actualPath)
 	if err != nil {
 		return fmt.Errorf("no se pudo abrir el archivo: %w", err)
 	}
@@ -987,8 +1478,11 @@ func (s *ArtefactService) associateHistoricalRecordFromPath(artefact *models.Art
 		return fmt.Errorf("no se pudo obtener información del archivo: %w", err)
 	}
 
-	// Determinar content type
-	ext := strings.ToLower(filepath.Ext(sourcePath))
+	// Determinar content type basado en la extensión del archivo original
+	ext := strings.ToLower(filepath.Ext(originalFilename))
+	if ext == "" {
+		ext = strings.ToLower(filepath.Ext(actualPath))
+	}
 	contentType := "application/pdf"
 	if strings.HasPrefix(ext, ".jpg") || strings.HasPrefix(ext, ".jpeg") {
 		contentType = "image/jpeg"
@@ -1002,8 +1496,8 @@ func (s *ArtefactService) associateHistoricalRecordFromPath(artefact *models.Art
 		return fmt.Errorf("no se pudo crear directorio: %w", err)
 	}
 
-	// Generar nombre único
-	filename := fmt.Sprintf("record_%d_%d_%s", artefact.ID, time.Now().Unix(), filepath.Base(sourcePath))
+	// Generar nombre único usando el nombre original del archivo
+	filename := fmt.Sprintf("record_%d_%d_%s", artefact.ID, time.Now().Unix(), originalFilename)
 	destPath := filepath.Join(uploadDir, filename)
 
 	// Copiar archivo
@@ -1022,7 +1516,7 @@ func (s *ArtefactService) associateHistoricalRecordFromPath(artefact *models.Art
 	record := models.HistoricalRecordModel{
 		ArtefactID:   artefact.ID,
 		Filename:     filename,
-		OriginalName: filepath.Base(sourcePath),
+		OriginalName: originalFilename,
 		FilePath:     destPath,
 		ContentType:  contentType,
 		Size:         fileInfo.Size(),
@@ -1035,18 +1529,42 @@ func (s *ArtefactService) associateHistoricalRecordFromPath(artefact *models.Art
 		return fmt.Errorf("no se pudo guardar metadata: %w", err)
 	}
 
+	// Si descargamos un archivo temporal, marcarlo para no eliminarlo (ya se copió)
+	shouldDeleteTemp = false
 	return nil
 }
 
 // associateINPLFromPath copia un archivo de ficha INPL y lo asocia al artefacto
 func (s *ArtefactService) associateINPLFromPath(artefact *models.ArtefactModel, sourcePath string) error {
-	// Verificar si el archivo existe
-	if _, err := os.Stat(sourcePath); os.IsNotExist(err) {
-		return fmt.Errorf("archivo no encontrado: %s", sourcePath)
+	// Si es una URL, descargarla primero
+	var actualPath string
+	var originalFilename string
+	var shouldDeleteTemp bool
+
+	if strings.HasPrefix(sourcePath, "http://") || strings.HasPrefix(sourcePath, "https://") {
+		downloadedPath, filename, err := downloadFileFromURL(sourcePath)
+		if err != nil {
+			return fmt.Errorf("error descargando archivo desde URL: %w", err)
+		}
+		actualPath = downloadedPath
+		originalFilename = filename
+		shouldDeleteTemp = true
+		defer func() {
+			if shouldDeleteTemp {
+				os.Remove(actualPath)
+			}
+		}()
+	} else {
+		actualPath = sourcePath
+		originalFilename = filepath.Base(sourcePath)
+		// Verificar si el archivo existe
+		if _, err := os.Stat(actualPath); os.IsNotExist(err) {
+			return fmt.Errorf("archivo no encontrado: %s", actualPath)
+		}
 	}
 
 	// Leer el archivo
-	sourceFile, err := os.Open(sourcePath)
+	sourceFile, err := os.Open(actualPath)
 	if err != nil {
 		return fmt.Errorf("no se pudo abrir el archivo: %w", err)
 	}
@@ -1058,8 +1576,11 @@ func (s *ArtefactService) associateINPLFromPath(artefact *models.ArtefactModel, 
 		return fmt.Errorf("no se pudo obtener información del archivo: %w", err)
 	}
 
-	// Determinar content type (INPL son imágenes)
-	ext := strings.ToLower(filepath.Ext(sourcePath))
+	// Determinar content type basado en la extensión del archivo original (INPL son imágenes)
+	ext := strings.ToLower(filepath.Ext(originalFilename))
+	if ext == "" {
+		ext = strings.ToLower(filepath.Ext(actualPath))
+	}
 	contentType := "image/jpeg"
 	switch ext {
 	case ".png":
@@ -1099,8 +1620,8 @@ func (s *ArtefactService) associateINPLFromPath(artefact *models.ArtefactModel, 
 		return fmt.Errorf("no se pudo crear directorio: %w", err)
 	}
 
-	// Generar nombre único
-	filename := fmt.Sprintf("ficha_%d_%d_%s", inplClassifier.ID, time.Now().Unix(), filepath.Base(sourcePath))
+	// Generar nombre único usando el nombre original del archivo
+	filename := fmt.Sprintf("ficha_%d_%d_%s", inplClassifier.ID, time.Now().Unix(), originalFilename)
 	destPath := filepath.Join(dir, filename)
 
 	// Copiar archivo
@@ -1119,7 +1640,7 @@ func (s *ArtefactService) associateINPLFromPath(artefact *models.ArtefactModel, 
 	ficha := models.INPLFicha{
 		INPLClassifierID: inplClassifier.ID,
 		Filename:         filename,
-		OriginalName:     filepath.Base(sourcePath),
+		OriginalName:     originalFilename,
 		FilePath:         destPath,
 		ContentType:      contentType,
 		Size:             fileInfo.Size(),
@@ -1132,5 +1653,7 @@ func (s *ArtefactService) associateINPLFromPath(artefact *models.ArtefactModel, 
 		return fmt.Errorf("no se pudo guardar ficha INPL: %w", err)
 	}
 
+	// Si descargamos un archivo temporal, marcarlo para no eliminarlo (ya se copió)
+	shouldDeleteTemp = false
 	return nil
 }

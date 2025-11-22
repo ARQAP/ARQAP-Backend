@@ -9,6 +9,7 @@ services:
       - ./:/app
     environment:
       - DATABASE_URL=postgres://user:pass@db:5432/arqap?sslmode=disable
+      - GOOGLE_DRIVE_CREDENTIALS_PATH=/app/credentials/arqap-backend-af6fda406bbc.json
     depends_on:
       - db
 
