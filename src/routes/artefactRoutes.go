@@ -31,7 +31,7 @@ func SetupArtefactRoutes(router *gin.Engine, service *services.ArtefactService) 
 		artefactGroup.GET("/:id/historical-record", controller.ServeHistoricalRecord)
 
 		// Summaries (endpoint singular para consistencia con frontend)
-		artefactGroup.GET("/summary", controller.GetArtefactSummaries)
+		artefactGroup.GET("/summaries", controller.GetArtefactSummaries)
 
 		// Import
 		artefactGroup.POST("/import", controller.ImportArtefactsFromExcel)
