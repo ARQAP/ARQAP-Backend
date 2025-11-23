@@ -590,6 +590,10 @@ func (s *ArtefactService) ImportArtefactsFromExcel(r io.Reader) (*ImportResult, 
 		if i == 0 {
 			continue
 		}
+
+		if i == 1 {
+			continue
+		}
 		
 		// Fila vacía o sin código → la salto
 		if len(row) == 0 || strings.TrimSpace(row[0]) == "" {
@@ -599,44 +603,45 @@ func (s *ArtefactService) ImportArtefactsFromExcel(r io.Reader) (*ImportResult, 
 		// ---------------------------------
 		// 3.1. Colección (Col S = índice 18)
 		// ---------------------------------
-		collectionName := "Colección Bruch" // Valor por defecto para compatibilidad
+		var collectionID *int
+		collectionName := ""
 		if len(row) > 18 {
 			collectionName = strings.TrimSpace(row[18])
-			if collectionName == "" {
-				collectionName = "Colección Bruch" // Valor por defecto
-			}
 		}
 		
-		// Buscar o crear colección
-		var collectionID int
-		if id, ok := collectionCache[collectionName]; ok {
-			collectionID = id
-		} else {
-			var collection models.CollectionModel
-			err := s.db.Where("name = ?", collectionName).First(&collection).Error
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				// Crear nueva colección
-				collection = models.CollectionModel{Name: collectionName}
-				if err := s.db.Create(&collection).Error; err != nil {
+		// Solo buscar o crear colección si se especificó una
+		if collectionName != "" {
+			var id int
+			if cachedID, ok := collectionCache[collectionName]; ok {
+				id = cachedID
+			} else {
+				var collection models.CollectionModel
+				err := s.db.Where("name = ?", collectionName).First(&collection).Error
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					// Crear nueva colección
+					collection = models.CollectionModel{Name: collectionName}
+					if err := s.db.Create(&collection).Error; err != nil {
+						result.Errors = append(result.Errors, fmt.Sprintf(
+							"Fila %d: no se pudo crear colección %s: %v",
+							i+1, collectionName, err,
+						))
+						continue // Saltar esta fila si no se puede crear la colección
+					}
+					collectionCache[collectionName] = collection.Id
+					id = collection.Id
+					log.Printf("[IMPORT] Colección creada: %s (ID: %d)", collectionName, collection.Id)
+				} else if err != nil {
 					result.Errors = append(result.Errors, fmt.Sprintf(
-						"Fila %d: no se pudo crear colección %s: %v",
+						"Fila %d: error buscando colección %s: %v",
 						i+1, collectionName, err,
 					))
-					continue // Saltar esta fila si no se puede crear la colección
+					continue
+				} else {
+					collectionCache[collectionName] = collection.Id
+					id = collection.Id
 				}
-				collectionCache[collectionName] = collection.Id
-				collectionID = collection.Id
-				log.Printf("[IMPORT] Colección creada: %s (ID: %d)", collectionName, collection.Id)
-			} else if err != nil {
-				result.Errors = append(result.Errors, fmt.Sprintf(
-					"Fila %d: error buscando colección %s: %v",
-					i+1, collectionName, err,
-				))
-				continue
-			} else {
-				collectionCache[collectionName] = collection.Id
-				collectionID = collection.Id
 			}
+			collectionID = &id
 		}
 
 		// ---------------------------------
@@ -908,7 +913,7 @@ func (s *ArtefactService) ImportArtefactsFromExcel(r io.Reader) (*ImportResult, 
 			Material:            material,
 			Available:           true,
 			Description:         description,
-			CollectionID:        &collectionID,
+			CollectionID:        collectionID,
 			ArchaeologistID:     archaeologistID,
 			ArchaeologicalSiteId: archaeologicalSiteID,
 		}
