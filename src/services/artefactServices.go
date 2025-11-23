@@ -11,10 +11,10 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/ARQAP/ARQAP-Backend/src/dtos"
 	"github.com/ARQAP/ARQAP-Backend/src/models"
@@ -104,6 +104,64 @@ func (s *ArtefactService) invalidateCache(pattern string) {
 			delete(s.cache, key)
 		}
 	}
+}
+
+// standardizeText normaliza un texto a Title Case: primera letra mayúscula, resto minúscula
+// Ejemplo: "arGENTINa" -> "Argentina"
+func standardizeText(text string) string {
+	if text == "" {
+		return ""
+	}
+	
+	// Dividir en palabras (respetando espacios)
+	words := strings.Fields(text)
+	result := make([]string, 0, len(words))
+	
+	for _, word := range words {
+		if word == "" {
+			continue
+		}
+		
+		// Convertir a slice de runes para manejar correctamente caracteres UTF-8
+		runes := []rune(word)
+		if len(runes) == 0 {
+			continue
+		}
+		
+		// Primera letra a mayúscula
+		runes[0] = unicode.ToUpper(runes[0])
+		
+		// Resto a minúscula
+		for i := 1; i < len(runes); i++ {
+			runes[i] = unicode.ToLower(runes[i])
+		}
+		
+		result = append(result, string(runes))
+	}
+	
+	return strings.Join(result, " ")
+}
+
+// standardizeTextToSentenceCase normaliza un texto a Sentence Case: solo primera letra de la oración en mayúscula
+// Ejemplo: "Alisador De Piedra Pulida" -> "Alisador de piedra pulida"
+func standardizeTextToSentenceCase(text string) string {
+	if text == "" {
+		return ""
+	}
+	
+	// Convertir todo a minúsculas primero
+	text = strings.ToLower(text)
+	
+	// Convertir a slice de runes para manejar correctamente caracteres UTF-8
+	runes := []rune(strings.TrimSpace(text))
+	if len(runes) == 0 {
+		return ""
+	}
+	
+	// Primera letra a mayúscula
+	runes[0] = unicode.ToUpper(runes[0])
+	
+	return string(runes)
 }
 
 // Helper function
@@ -609,11 +667,12 @@ func (s *ArtefactService) ImportArtefactsFromExcel(r io.Reader) (*ImportResult, 
 	collectionID := bruchCollection.Id // references:Id en tu GORM
 
 	// ==========================================
-	// 2) Cache en memoria de arqueólogos por nombre
-	//     key: nombre completo leído del Excel
-	//     value: ID en la base
+	// 2) Caches en memoria
 	// ==========================================
 	archaeologistCache := make(map[string]int)
+	countryCache := make(map[string]int)          // key: nombre país
+	regionCache := make(map[string]int)           // key: "nombre_region|country_id"
+	archaeologicalSiteCache := make(map[string]int) // key: "nombre_sitio|region_id"
 
 	// ===============================
 	// 3) Recorrer filas del Excel
@@ -630,7 +689,7 @@ func (s *ArtefactService) ImportArtefactsFromExcel(r io.Reader) (*ImportResult, 
 		var archaeologistID *int
 
 		if len(row) > 1 {
-			fullName := strings.TrimSpace(row[1]) // ej: "Carlos Bruch"
+			fullName := standardizeText(strings.TrimSpace(row[1])) // ej: "Carlos Bruch"
 
 			if fullName != "" {
 				// Primero miro en cache para no pegarle siempre a la BD
@@ -690,81 +749,212 @@ func (s *ArtefactService) ImportArtefactsFromExcel(r io.Reader) (*ImportResult, 
 		}
 
 		// ---------------------------------
-		// 3.2. Datos del artefacto
+		// 3.2. Crear/buscar País, Región y Sitio Arqueológico
 		// ---------------------------------
 
 		// Col 0: código inventario → Name
-		name := strings.TrimSpace(row[0])
+		name := standardizeText(strings.TrimSpace(row[0]))
 
 		// Col 7: material
 		material := ""
 		if len(row) > 7 {
-			material = strings.TrimSpace(row[7])
+			material = standardizeText(strings.TrimSpace(row[7]))
 		}
 
-		// Col 8–13: tipología + procedencia → Description
-		typology := ""
-		if len(row) > 8 {
-			typology = strings.TrimSpace(row[8])
-		}
-
-		region, country, province, locality, site := "", "", "", "", ""
-		if len(row) > 9 {
-			region = strings.TrimSpace(row[9])
-		}
-		if len(row) > 10 {
-			country = strings.TrimSpace(row[10])
-		}
-		if len(row) > 11 {
-			province = strings.TrimSpace(row[11])
-		}
-		if len(row) > 12 {
-			locality = strings.TrimSpace(row[12])
-		}
-		if len(row) > 13 {
-			site = strings.TrimSpace(row[13])
-		}
-
-		// armamos una descripción básica
-		descParts := []string{}
-		if typology != "" {
-			descParts = append(descParts, typology)
-		}
-		if region != "" {
-			descParts = append(descParts, region)
-		}
-
-		loc := []string{}
-		if site != "" {
-			loc = append(loc, site)
-		}
-		if locality != "" {
-			loc = append(loc, locality)
-		}
-		if province != "" {
-			loc = append(loc, province)
-		}
-		if country != "" {
-			loc = append(loc, country)
-		}
-		if len(loc) > 0 {
-			descParts = append(descParts, strings.Join(loc, ", "))
-		}
-
+		// Col R (17): descripción de la pieza (Sentence Case: solo primera letra mayúscula)
 		var description *string
-		if len(descParts) > 0 {
-			d := strings.Join(descParts, " – ")
-			description = &d
+		if len(row) > 17 {
+			desc := standardizeTextToSentenceCase(strings.TrimSpace(row[17]))
+			if desc != "" {
+				description = &desc
+			}
 		}
 
+		// ---------------------------------
+		// 3.2.1. País (Col K = índice 10)
+		// ---------------------------------
+		var countryID *int
+		countryName := ""
+		if len(row) > 10 {
+			countryName = standardizeText(strings.TrimSpace(row[10]))
+			if countryName != "" {
+				if id, ok := countryCache[countryName]; ok {
+					idCopy := id
+					countryID = &idCopy
+				} else {
+					var country models.CountryModel
+					err := s.db.Where("name = ?", countryName).First(&country).Error
+					if errors.Is(err, gorm.ErrRecordNotFound) {
+						// Crear nuevo país
+						country = models.CountryModel{Name: countryName}
+						if err := s.db.Create(&country).Error; err != nil {
+							result.Errors = append(result.Errors, fmt.Sprintf(
+								"Fila %d: no se pudo crear país %s: %v",
+								i+1, countryName, err,
+							))
+						} else {
+							countryCache[countryName] = country.Id
+							idCopy := country.Id
+							countryID = &idCopy
+							log.Printf("[IMPORT] País creado: %s (ID: %d)", countryName, country.Id)
+						}
+					} else if err != nil {
+						result.Errors = append(result.Errors, fmt.Sprintf(
+							"Fila %d: error buscando país %s: %v",
+							i+1, countryName, err,
+						))
+					} else {
+						countryCache[countryName] = country.Id
+						idCopy := country.Id
+						countryID = &idCopy
+					}
+				}
+			}
+		}
+
+		// ---------------------------------
+		// 3.2.2. Región (Col L + J = índices 11 y 9)
+		// ---------------------------------
+		var regionID *int
+		if countryID != nil {
+			regionPartL := ""
+			regionPartJ := ""
+			if len(row) > 11 {
+				regionPartL = standardizeText(strings.TrimSpace(row[11])) // Columna L
+			}
+			if len(row) > 9 {
+				regionPartJ = standardizeText(strings.TrimSpace(row[9])) // Columna J
+			}
+
+			// Formar nombre: Columna L + ", " + Columna J
+			regionName := strings.TrimSpace(regionPartL + ", " + regionPartJ)
+			if regionName != "" {
+				regionKey := fmt.Sprintf("%s|%d", regionName, *countryID)
+				if id, ok := regionCache[regionKey]; ok {
+					idCopy := id
+					regionID = &idCopy
+				} else {
+					var region models.RegionModel
+					err := s.db.Where("name = ? AND country_id = ?", regionName, *countryID).First(&region).Error
+					if errors.Is(err, gorm.ErrRecordNotFound) {
+						// Crear nueva región
+						region = models.RegionModel{
+							Name:      regionName,
+							CountryID: *countryID,
+						}
+						if err := s.db.Create(&region).Error; err != nil {
+							result.Errors = append(result.Errors, fmt.Sprintf(
+								"Fila %d: no se pudo crear región %s: %v",
+								i+1, regionName, err,
+							))
+						} else {
+							regionCache[regionKey] = region.ID
+							idCopy := region.ID
+							regionID = &idCopy
+							log.Printf("[IMPORT] Región creada: %s (ID: %d) en país %s", regionName, region.ID, countryName)
+						}
+					} else if err != nil {
+						result.Errors = append(result.Errors, fmt.Sprintf(
+							"Fila %d: error buscando región %s: %v",
+							i+1, regionName, err,
+						))
+					} else {
+						regionCache[regionKey] = region.ID
+						idCopy := region.ID
+						regionID = &idCopy
+					}
+				}
+			}
+		}
+
+		// ---------------------------------
+		// 3.2.3. Sitio Arqueológico (Col M + N + O = índices 12, 13, 14)
+		// ---------------------------------
+		var archaeologicalSiteID *int
+		if regionID != nil {
+			sitePart1 := ""
+			sitePart2 := ""
+			sitePart3 := ""
+			if len(row) > 12 {
+				sitePart1 = standardizeText(strings.TrimSpace(row[12]))
+			}
+			if len(row) > 13 {
+				sitePart2 = standardizeText(strings.TrimSpace(row[13]))
+			}
+			if len(row) > 14 {
+				sitePart3 = standardizeText(strings.TrimSpace(row[14]))
+			}
+
+			// Si la columna N (sitePart2) es igual a la columna O (sitePart3), usar solo una
+			if sitePart2 != "" && sitePart3 != "" && sitePart2 == sitePart3 {
+				sitePart3 = "" // No agregar la columna O si es igual a la N
+			}
+
+			siteNameParts := []string{}
+			if sitePart1 != "" {
+				siteNameParts = append(siteNameParts, sitePart1)
+			}
+			if sitePart2 != "" {
+				siteNameParts = append(siteNameParts, sitePart2)
+			}
+			if sitePart3 != "" {
+				siteNameParts = append(siteNameParts, sitePart3)
+			}
+
+			siteName := strings.TrimSpace(strings.Join(siteNameParts, " "))
+			if siteName != "" {
+				siteKey := fmt.Sprintf("%s|%d", siteName, *regionID)
+				if id, ok := archaeologicalSiteCache[siteKey]; ok {
+					idCopy := id
+					archaeologicalSiteID = &idCopy
+				} else {
+					var site models.ArchaeologicalSiteModel
+					err := s.db.Where(`"Name" = ? AND region_id = ?`, siteName, *regionID).First(&site).Error
+					if errors.Is(err, gorm.ErrRecordNotFound) {
+						// Crear nuevo sitio arqueológico
+						// Location y Description son campos obligatorios, usar valores por defecto
+						site = models.ArchaeologicalSiteModel{
+							Name:        siteName,
+							Location:    "No especificada",
+							Description: "Sitio arqueológico importado desde Excel",
+							RegionID:    *regionID,
+						}
+						if err := s.db.Create(&site).Error; err != nil {
+							result.Errors = append(result.Errors, fmt.Sprintf(
+								"Fila %d: no se pudo crear sitio arqueológico %s: %v",
+								i+1, siteName, err,
+							))
+						} else {
+							archaeologicalSiteCache[siteKey] = site.Id
+							idCopy := site.Id
+							archaeologicalSiteID = &idCopy
+							log.Printf("[IMPORT] Sitio arqueológico creado: %s (ID: %d) en región ID %d", siteName, site.Id, *regionID)
+						}
+					} else if err != nil {
+						result.Errors = append(result.Errors, fmt.Sprintf(
+							"Fila %d: error buscando sitio arqueológico %s: %v",
+							i+1, siteName, err,
+						))
+					} else {
+						archaeologicalSiteCache[siteKey] = site.Id
+						idCopy := site.Id
+						archaeologicalSiteID = &idCopy
+					}
+				}
+			}
+		}
+
+		// ---------------------------------
+		// 3.2.4. Crear artefacto
+		// ---------------------------------
 		artefact := models.ArtefactModel{
-			Name:         name,
-			Material:     material,
-			Available:    true,
-			Description:  description,
-			CollectionID: &collectionID,
-			// puede ir nil si no pudimos crear/buscar al arqueólogo
-			ArchaeologistID: archaeologistID,
+			Name:                name,
+			Material:            material,
+			Available:           true,
+			Description:         description,
+			CollectionID:        &collectionID,
+			ArchaeologistID:     archaeologistID,
+			ArchaeologicalSiteId: archaeologicalSiteID,
 		}
 
 		if err := s.db.Create(&artefact).Error; err != nil {
@@ -1610,19 +1800,18 @@ func (s *ArtefactService) associateINPLFromPath(artefact *models.ArtefactModel, 
 		}
 	}
 
-	// Crear directorio de destino (usando estructura similar a INPLService)
+	// Crear directorio de destino (una sola carpeta para todas las fichas INPL)
 	uploadRoot := "uploads/inpl"
 	if envRoot := os.Getenv("INPL_UPLOAD_ROOT"); envRoot != "" {
 		uploadRoot = envRoot
 	}
-	dir := filepath.Join(uploadRoot, strconv.Itoa(inplClassifier.ID))
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(uploadRoot, 0755); err != nil {
 		return fmt.Errorf("no se pudo crear directorio: %w", err)
 	}
 
-	// Generar nombre único usando el nombre original del archivo
+	// Generar nombre único usando el ID del clasificador y el nombre original del archivo
 	filename := fmt.Sprintf("ficha_%d_%d_%s", inplClassifier.ID, time.Now().Unix(), originalFilename)
-	destPath := filepath.Join(dir, filename)
+	destPath := filepath.Join(uploadRoot, filename)
 
 	// Copiar archivo
 	destFile, err := os.Create(destPath)
@@ -1636,21 +1825,50 @@ func (s *ArtefactService) associateINPLFromPath(artefact *models.ArtefactModel, 
 		return fmt.Errorf("no se pudo copiar archivo: %w", err)
 	}
 
-	// Crear registro en BD
-	ficha := models.INPLFicha{
-		INPLClassifierID: inplClassifier.ID,
-		Filename:         filename,
-		OriginalName:     originalFilename,
-		FilePath:         destPath,
-		ContentType:      contentType,
-		Size:             fileInfo.Size(),
-		CreatedAt:        time.Now(),
-		UpdatedAt:        time.Now(),
-	}
+	// Verificar si ya existe una ficha INPL para este clasificador (solo debe haber una)
+	var existingFicha models.INPLFicha
+	err = s.db.Where("inpl_classifier_id = ?", inplClassifier.ID).First(&existingFicha).Error
+	
+	if err == nil {
+		// Ya existe una ficha, reemplazarla (eliminar archivo anterior y actualizar registro)
+		if existingFicha.FilePath != "" {
+			_ = os.Remove(existingFicha.FilePath)
+		}
+		// Actualizar la ficha existente
+		existingFicha.Filename = filename
+		existingFicha.OriginalName = originalFilename
+		existingFicha.FilePath = destPath
+		existingFicha.ContentType = contentType
+		existingFicha.Size = fileInfo.Size()
+		existingFicha.UpdatedAt = time.Now()
+		
+		if err := s.db.Save(&existingFicha).Error; err != nil {
+			os.Remove(destPath)
+			return fmt.Errorf("no se pudo actualizar ficha INPL: %w", err)
+		}
+		log.Printf("[IMPORT] Ficha INPL reemplazada para clasificador ID %d", inplClassifier.ID)
+	} else if errors.Is(err, gorm.ErrRecordNotFound) {
+		// No existe ficha, crear nueva
+		ficha := models.INPLFicha{
+			INPLClassifierID: inplClassifier.ID,
+			Filename:         filename,
+			OriginalName:     originalFilename,
+			FilePath:         destPath,
+			ContentType:      contentType,
+			Size:             fileInfo.Size(),
+			CreatedAt:        time.Now(),
+			UpdatedAt:        time.Now(),
+		}
 
-	if err := s.db.Create(&ficha).Error; err != nil {
+		if err := s.db.Create(&ficha).Error; err != nil {
+			os.Remove(destPath)
+			return fmt.Errorf("no se pudo guardar ficha INPL: %w", err)
+		}
+		log.Printf("[IMPORT] Nueva ficha INPL creada para clasificador ID %d", inplClassifier.ID)
+	} else {
+		// Error al buscar
 		os.Remove(destPath)
-		return fmt.Errorf("no se pudo guardar ficha INPL: %w", err)
+		return fmt.Errorf("error verificando ficha INPL existente: %w", err)
 	}
 
 	// Si descargamos un archivo temporal, marcarlo para no eliminarlo (ya se copió)

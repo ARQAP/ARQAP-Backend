@@ -6,7 +6,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
@@ -56,8 +55,8 @@ func (s *INPLService) CreateClassifierWithFichas(files []FichaUpload) (*models.I
 		return nil, nil, err
 	}
 
-	dir := filepath.Join(s.uploadRoot, strconv.Itoa(cls.ID))
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	// Crear carpeta única para todas las fichas INPL (sin subcarpetas por clasificador)
+	if err := os.MkdirAll(s.uploadRoot, 0o755); err != nil {
 		tx.Rollback()
 		return nil, nil, err
 	}
@@ -65,8 +64,9 @@ func (s *INPLService) CreateClassifierWithFichas(files []FichaUpload) (*models.I
 	var saved []string
 	var fichas []models.INPLFicha
 	for i, fu := range files {
-		name := buildSafeFilename(fu.OriginalName, i)
-		path := filepath.Join(dir, name)
+		// Generar nombre único incluyendo el ID del clasificador en el nombre del archivo
+		name := fmt.Sprintf("ficha_%d_%s", cls.ID, buildSafeFilename(fu.OriginalName, i))
+		path := filepath.Join(s.uploadRoot, name)
 		if err := saveToFile(path, fu.Reader); err != nil {
 			cleanupFiles(saved)
 			tx.Rollback()
@@ -180,8 +180,8 @@ func (s *INPLService) AddFichasToClassifier(classifierID int, files []FichaUploa
 		return nil, errors.New("classifier does not exist")
 	}
 
-	dir := filepath.Join(s.uploadRoot, strconv.Itoa(classifierID))
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	// Crear carpeta única para todas las fichas INPL (sin subcarpetas por clasificador)
+	if err := os.MkdirAll(s.uploadRoot, 0o755); err != nil {
 		tx.Rollback()
 		return nil, err
 	}
@@ -190,8 +190,9 @@ func (s *INPLService) AddFichasToClassifier(classifierID int, files []FichaUploa
 	var out []models.INPLFicha
 
 	for idx, fu := range files {
-		filename := buildSafeFilename(fu.OriginalName, idx)
-		final := filepath.Join(dir, filename)
+		// Generar nombre único incluyendo el ID del clasificador en el nombre del archivo
+		filename := fmt.Sprintf("ficha_%d_%s", classifierID, buildSafeFilename(fu.OriginalName, idx))
+		final := filepath.Join(s.uploadRoot, filename)
 		if err := saveToFile(final, fu.Reader); err != nil {
 			cleanupFiles(saved)
 			tx.Rollback()
@@ -292,12 +293,10 @@ func (s *INPLService) DeleteClassifier(id int) error {
 		return err
 	}
 
+	// Eliminar archivos de fichas (ahora están directamente en uploads/inpl/)
 	for _, f := range fichas {
 		_ = os.Remove(f.FilePath)
 	}
-
-	dir := filepath.Join(s.uploadRoot, strconv.Itoa(id))
-	_ = os.RemoveAll(dir)
 
 	return nil
 }
@@ -316,9 +315,10 @@ func (s *INPLService) ReplaceFicha(fichaID int, file FichaUpload) (*models.INPLF
 		return nil, err
 	}
 
-	dir := filepath.Dir(f.FilePath)
-	name := buildSafeFilename(file.OriginalName, 0)
-	newPath := filepath.Join(dir, name)
+	// Usar la carpeta única de INPL (sin subcarpetas por clasificador)
+	// Obtener el ID del clasificador desde la ficha existente
+	name := fmt.Sprintf("ficha_%d_%s", f.INPLClassifierID, buildSafeFilename(file.OriginalName, 0))
+	newPath := filepath.Join(s.uploadRoot, name)
 
 	if err := saveToFile(newPath, file.Reader); err != nil {
 		return nil, err
