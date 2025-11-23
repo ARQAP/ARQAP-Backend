@@ -20,25 +20,32 @@ func GetSecretKey() string {
 
 func AuthMiddleware() gin.HandlerFunc {
 	return func (ctx *gin.Context) {
+		var tokenString string
+		
 		// Gets the authorization header
 		authHeader := strings.TrimSpace(ctx.GetHeader("Authorization"))
-		if authHeader == "" {
-			ctx.JSON(http.StatusUnauthorized, gin.H{"error": "Authorization header is required"})
-			ctx.Abort()
-			return
+		if authHeader != "" {
+			// Divides the header into Bearer and Token
+			parts := strings.Split(authHeader, " ")
+			if len(parts) == 2 && parts[0] == "Bearer" {
+				tokenString = parts[1]
+			}
 		}
-
-		// Divides the header into Bearer and Token
-		parts := strings.Split(authHeader, " ")
-		if len(parts) != 2 || parts[0] != "Bearer" {
-			ctx.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid authorization format"})
+		
+		// If no token in header, try query parameter (for iframes)
+		if tokenString == "" {
+			tokenString = strings.TrimSpace(ctx.Query("token"))
+		}
+		
+		if tokenString == "" {
+			ctx.JSON(http.StatusUnauthorized, gin.H{"error": "Authorization header is required"})
 			ctx.Abort()
 			return
 		}
 
 		// Verifies the JWT token
 		claims := jwt.MapClaims{}
-		token, err := jwt.ParseWithClaims(parts[1], claims, func(token *jwt.Token) (interface{}, error) {
+		token, err := jwt.ParseWithClaims(tokenString, claims, func(token *jwt.Token) (interface{}, error) {
 			return []byte(secretKey), nil
 		})
 
