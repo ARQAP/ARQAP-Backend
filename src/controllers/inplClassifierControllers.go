@@ -4,6 +4,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/ARQAP/ARQAP-Backend/src/models"
 	"github.com/ARQAP/ARQAP-Backend/src/services"
@@ -305,8 +306,25 @@ func (c *INPLClassifierController) DownloadFicha(ctx *gin.Context) {
 		ctx.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 		return
 	}
+	
+	// Detectar Content-Type basado en la extensión del archivo si el guardado es incorrecto
+	contentType := f.ContentType
+	if strings.HasSuffix(strings.ToLower(f.Filename), ".pdf") {
+		contentType = "application/pdf"
+	} else if strings.HasSuffix(strings.ToLower(f.Filename), ".jpg") || strings.HasSuffix(strings.ToLower(f.Filename), ".jpeg") {
+		contentType = "image/jpeg"
+	} else if strings.HasSuffix(strings.ToLower(f.Filename), ".png") {
+		contentType = "image/png"
+	} else if strings.HasSuffix(strings.ToLower(f.Filename), ".webp") {
+		contentType = "image/webp"
+	}
+	
+	// Headers para evitar caché y asegurar el Content-Type correcto
 	ctx.Header("Content-Disposition", `inline; filename="`+f.Filename+`"`)
-	ctx.Header("Content-Type", f.ContentType)
+	ctx.Header("Content-Type", contentType)
+	ctx.Header("Cache-Control", "no-cache, no-store, must-revalidate")
+	ctx.Header("Pragma", "no-cache")
+	ctx.Header("Expires", "0")
 	ctx.File(f.FilePath)
 }
 

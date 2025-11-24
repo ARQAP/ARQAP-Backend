@@ -555,120 +555,28 @@ func (s *ArtefactService) ImportArtefactsFromExcel(r io.Reader) (*ImportResult, 
 	}
 	defer f.Close()
 
-	rows, err := f.GetRows("BASE BRUCH DIEGO")
+	// Buscar la primera hoja disponible (nombre genérico)
+	sheetList := f.GetSheetList()
+	if len(sheetList) == 0 {
+		return nil, fmt.Errorf("el archivo Excel no contiene hojas")
+	}
+	
+	// Usar la primera hoja (puede tener cualquier nombre)
+	sheetName := sheetList[0]
+	log.Printf("[IMPORT] Usando hoja: %s", sheetName)
+	
+	rows, err := f.GetRows(sheetName)
 	if err != nil {
-		return nil, fmt.Errorf("no se pudo leer la hoja BASE BRUCH DIEGO: %w", err)
+		return nil, fmt.Errorf("no se pudo leer la hoja %s: %w", sheetName, err)
 	}
 
-	log.Printf("[IMPORT] Total de filas en BASE BRUCH DIEGO: %d", len(rows))
+	log.Printf("[IMPORT] Total de filas en %s: %d", sheetName, len(rows))
 	result := &ImportResult{Imported: 0, Errors: []string{}}
-
-	// ===============================
-	// 0) Leer hoja TOPOGRÁFICO y crear mapa código -> archivos
-	// ===============================
-	_, err = f.GetRows("TOPOGRÁFICO")
-	if err != nil {
-		// Si no existe la hoja, continuamos sin asociar archivos
-		result.Errors = append(result.Errors, "Advertencia: no se encontró la hoja TOPOGRÁFICO, se importarán artefactos sin archivos asociados")
-	}
-
-	// Mapa: código numérico -> {foto, ficha histórica, ficha INPL}
-	// Estructura real: Col A = ACLARACIONES (texto), Col B = FOTO PIEZA (código/hipervínculo), Col C = FICHA INPL (código/hipervínculo), Col D = FICHA HST. (código/hipervínculo)
-	// Los hipervínculos en B, C y D apuntan a los archivos reales
-	topoMap := make(map[string]struct {
-		foto           string
-		fichaHistorica string
-		fichaINPL      string
-	})
-
-	if err == nil {
-		log.Println("[IMPORT] Leyendo hoja TOPOGRÁFICO para asociar archivos...")
-		// Leer hipervínculos de las celdas en lugar de solo el texto
-		sheetName := "TOPOGRÁFICO"
-		rows, err := f.GetRows(sheetName)
-		if err == nil {
-			topoCount := 0
-			for rowIdx, row := range rows {
-				// Saltar encabezados (primera fila) y filas vacías
-				if rowIdx < 2 || len(row) < 2 {
-					continue
-				}
-
-				// Obtener código de la columna B (índice 1, fila rowIdx+1 porque GetRows es 0-indexed pero las celdas son 1-indexed)
-				cellB := fmt.Sprintf("B%d", rowIdx+1)
-				codigo, _ := f.GetCellValue(sheetName, cellB)
-				codigo = strings.TrimSpace(codigo)
-
-				// Saltar si no hay código o es texto descriptivo
-				if codigo == "" || !regexp.MustCompile(`^\d+$`).MatchString(codigo) {
-					continue
-				}
-
-				// Extraer hipervínculos de las celdas B, C y D
-				fotoPath := ""
-				inplPath := ""
-				historicaPath := ""
-
-				// Columna B - Foto
-				cellBHyperlink, target, _ := f.GetCellHyperLink(sheetName, cellB)
-				if cellBHyperlink && target != "" {
-					fotoPath = target
-				}
-
-				// Columna C - INPL
-				cellC := fmt.Sprintf("C%d", rowIdx+1)
-				cellCHyperlink, target, _ := f.GetCellHyperLink(sheetName, cellC)
-				if cellCHyperlink && target != "" {
-					inplPath = target
-				}
-
-				// Columna D - Histórica
-				cellD := fmt.Sprintf("D%d", rowIdx+1)
-				cellDHyperlink, target, _ := f.GetCellHyperLink(sheetName, cellD)
-				if cellDHyperlink && target != "" {
-					historicaPath = target
-				}
-
-				// Guardar en el mapa
-				topoMap[codigo] = struct {
-					foto           string
-					fichaHistorica string
-					fichaINPL      string
-				}{
-					foto:           fotoPath,
-					fichaHistorica: historicaPath,
-					fichaINPL:      inplPath,
-				}
-				topoCount++
-			}
-			log.Printf("[IMPORT] Procesados %d códigos en hoja TOPOGRÁFICO", topoCount)
-		}
-	}
-
-	// ===============================
-	// 1) Asegurar Colección "Bruch"
-	// ===============================
-	var bruchCollection models.CollectionModel
-	if err := s.db.
-		Where("name = ?", "Colección Bruch").
-		First(&bruchCollection).Error; err != nil {
-
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			bruchCollection = models.CollectionModel{
-				Name: "Colección Bruch",
-			}
-			if err := s.db.Create(&bruchCollection).Error; err != nil {
-				return nil, fmt.Errorf("no se pudo crear la colección Bruch: %w", err)
-			}
-		} else {
-			return nil, fmt.Errorf("error buscando colección Bruch: %w", err)
-		}
-	}
-	collectionID := bruchCollection.Id // references:Id en tu GORM
 
 	// ==========================================
 	// 2) Caches en memoria
 	// ==========================================
+	collectionCache := make(map[string]int)       // key: nombre colección
 	archaeologistCache := make(map[string]int)
 	countryCache := make(map[string]int)          // key: nombre país
 	regionCache := make(map[string]int)           // key: "nombre_region|country_id"
@@ -678,13 +586,66 @@ func (s *ArtefactService) ImportArtefactsFromExcel(r io.Reader) (*ImportResult, 
 	// 3) Recorrer filas del Excel
 	// ===============================
 	for i, row := range rows {
+		// Saltar primera fila (encabezados)
+		if i == 0 {
+			continue
+		}
+
+		if i == 1 {
+			continue
+		}
+		
 		// Fila vacía o sin código → la salto
 		if len(row) == 0 || strings.TrimSpace(row[0]) == "" {
 			continue
 		}
 
 		// ---------------------------------
-		// 3.1. Nombre completo del arqueólogo desde Excel
+		// 3.1. Colección (Col S = índice 18)
+		// ---------------------------------
+		var collectionID *int
+		collectionName := ""
+		if len(row) > 18 {
+			collectionName = strings.TrimSpace(row[18])
+		}
+		
+		// Solo buscar o crear colección si se especificó una
+		if collectionName != "" {
+			var id int
+			if cachedID, ok := collectionCache[collectionName]; ok {
+				id = cachedID
+			} else {
+				var collection models.CollectionModel
+				err := s.db.Where("name = ?", collectionName).First(&collection).Error
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					// Crear nueva colección
+					collection = models.CollectionModel{Name: collectionName}
+					if err := s.db.Create(&collection).Error; err != nil {
+						result.Errors = append(result.Errors, fmt.Sprintf(
+							"Fila %d: no se pudo crear colección %s: %v",
+							i+1, collectionName, err,
+						))
+						continue // Saltar esta fila si no se puede crear la colección
+					}
+					collectionCache[collectionName] = collection.Id
+					id = collection.Id
+					log.Printf("[IMPORT] Colección creada: %s (ID: %d)", collectionName, collection.Id)
+				} else if err != nil {
+					result.Errors = append(result.Errors, fmt.Sprintf(
+						"Fila %d: error buscando colección %s: %v",
+						i+1, collectionName, err,
+					))
+					continue
+				} else {
+					collectionCache[collectionName] = collection.Id
+					id = collection.Id
+				}
+			}
+			collectionID = &id
+		}
+
+		// ---------------------------------
+		// 3.2. Nombre completo del arqueólogo desde Excel (Col B = índice 1)
 		// ---------------------------------
 		var archaeologistID *int
 
@@ -749,10 +710,10 @@ func (s *ArtefactService) ImportArtefactsFromExcel(r io.Reader) (*ImportResult, 
 		}
 
 		// ---------------------------------
-		// 3.2. Crear/buscar País, Región y Sitio Arqueológico
+		// 3.3. Crear/buscar País, Región y Sitio Arqueológico
 		// ---------------------------------
 
-		// Col 0: código inventario → Name
+		// Col A (0): código inventario → Name
 		name := standardizeText(strings.TrimSpace(row[0]))
 
 		// Col 7: material
@@ -952,7 +913,7 @@ func (s *ArtefactService) ImportArtefactsFromExcel(r io.Reader) (*ImportResult, 
 			Material:            material,
 			Available:           true,
 			Description:         description,
-			CollectionID:        &collectionID,
+			CollectionID:        collectionID,
 			ArchaeologistID:     archaeologistID,
 			ArchaeologicalSiteId: archaeologicalSiteID,
 		}
@@ -966,64 +927,204 @@ func (s *ArtefactService) ImportArtefactsFromExcel(r io.Reader) (*ImportResult, 
 		log.Printf("[IMPORT] Artefacto creado: %s (ID: %d)", name, artefact.ID)
 
 		// ===============================
-		// 3.3. Asociar archivos desde hoja TOPOGRÁFICO
+		// 3.3.5. Asignar ubicación física (Col W, X, Y = índices 22, 23, 24)
 		// ===============================
-		// Extraer número del código (ej: 5788 de "MLP-Ar-CB-5788")
-		re := regexp.MustCompile(`(\d+)$`)
-		matches := re.FindStringSubmatch(name)
-		if len(matches) > 1 && len(topoMap) > 0 {
-			codigoNum := matches[1]
-			if topoData, found := topoMap[codigoNum]; found {
-				// Asociar foto - si hay ruta directa la usamos, sino buscamos por código
-				if topoData.foto != "" {
-					if strings.HasPrefix(topoData.foto, "http://") || strings.HasPrefix(topoData.foto, "https://") || strings.Contains(topoData.foto, string(filepath.Separator)) {
-						// Es una ruta de archivo o URL
-						log.Printf("[IMPORT] Descargando foto para %s desde: %s", name, topoData.foto)
-						if err := s.associatePictureFromPath(&artefact, topoData.foto); err != nil {
-							log.Printf("[IMPORT] ERROR asociando foto para %s: %v", name, err)
-							result.Errors = append(result.Errors, fmt.Sprintf("Fila %d: error asociando foto: %v", i+1, err))
-						} else {
-							log.Printf("[IMPORT] Foto asociada exitosamente para %s", name)
-						}
+		var physicalLocationID *int
+		if len(row) > 22 {
+			shelfCodeStr := strings.TrimSpace(row[22]) // Col W: código de estante
+			if shelfCodeStr != "" {
+				// Convertir código de estante a entero
+				var shelfCode int
+				if _, err := fmt.Sscanf(shelfCodeStr, "%d", &shelfCode); err == nil {
+					// Validar que el código esté en el rango válido (1-30)
+					if shelfCode < 1 || shelfCode > 30 {
+						log.Printf("[IMPORT] Fila %d: código de estante %d fuera del rango válido (1-30), omitiendo ubicación física", i+1, shelfCode)
+						result.Errors = append(result.Errors, fmt.Sprintf("Fila %d: código de estante %d fuera del rango válido (1-30)", i+1, shelfCode))
 					} else {
-						// Es solo un código, buscar archivo
-						if err := s.associatePictureFromCode(&artefact, topoData.foto); err != nil {
-							result.Errors = append(result.Errors, fmt.Sprintf("Fila %d: error asociando foto: %v", i+1, err))
+						// Buscar estante por código
+						var shelf models.ShelfModel
+						err := s.db.Where("code = ?", shelfCode).First(&shelf).Error
+						if errors.Is(err, gorm.ErrRecordNotFound) {
+							// Estante no existe, crearlo automáticamente
+							log.Printf("[IMPORT] Estante con código %d no encontrado, creándolo automáticamente...", shelfCode)
+							shelf = models.ShelfModel{
+								Code: shelfCode,
+							}
+							if err := s.db.Create(&shelf).Error; err != nil {
+								log.Printf("[IMPORT] ERROR creando estante con código %d: %v", shelfCode, err)
+								result.Errors = append(result.Errors, fmt.Sprintf("Fila %d: error creando estante con código %d: %v", i+1, shelfCode, err))
+							} else {
+								log.Printf("[IMPORT] Estante con código %d creado exitosamente (ID: %d)", shelfCode, shelf.ID)
+							}
+						} else if err != nil {
+							log.Printf("[IMPORT] ERROR buscando estante con código %d: %v", shelfCode, err)
+							result.Errors = append(result.Errors, fmt.Sprintf("Fila %d: error buscando estante con código %d: %v", i+1, shelfCode, err))
+						}
+						
+						// Si tenemos el estante (ya existía o se creó), continuar con la asignación
+						if shelf.ID > 0 {
+							// Leer nivel (Col X = índice 23)
+							var level models.LevelNumber
+							hasValidLevel := false
+							if len(row) > 23 {
+								levelStr := strings.TrimSpace(row[23])
+								if levelStr != "" {
+									var levelNum int
+									if _, err := fmt.Sscanf(levelStr, "%d", &levelNum); err == nil {
+										// Validar que el nivel esté entre 1 y 4
+										if levelNum >= 1 && levelNum <= 4 {
+											level = models.LevelNumber(levelNum)
+											hasValidLevel = true
+										} else {
+											log.Printf("[IMPORT] Fila %d: nivel inválido %d (debe ser 1-4), omitiendo ubicación física", i+1, levelNum)
+										}
+									}
+								}
+							}
+
+							// Leer columna (Col Y = índice 24)
+							var column models.ColumnLetter
+							hasValidColumn := false
+							if len(row) > 24 {
+								columnStr := strings.TrimSpace(strings.ToUpper(row[24]))
+								if columnStr != "" {
+									// Validar que sea A, B, C o D
+									if columnStr == "A" || columnStr == "B" || columnStr == "C" || columnStr == "D" {
+										column = models.ColumnLetter(columnStr)
+										hasValidColumn = true
+									} else {
+										log.Printf("[IMPORT] Fila %d: columna inválida %s (debe ser A, B, C o D), omitiendo ubicación física", i+1, columnStr)
+									}
+								}
+							}
+
+							// Si tenemos nivel y columna válidos, buscar o crear PhysicalLocation
+							if hasValidLevel && hasValidColumn {
+								var existingLocation models.PhysicalLocationModel
+								// Usar comillas dobles para escapar "column" que es palabra reservada en PostgreSQL
+								err := s.db.Where(`shelf_id = ? AND level = ? AND "column" = ?`, shelf.ID, level, column).First(&existingLocation).Error
+								if err == nil {
+									// Ubicación ya existe, usar su ID
+									physicalLocationID = &existingLocation.ID
+									log.Printf("[IMPORT] Ubicación física encontrada para %s: Estante %d, Nivel %d, Columna %s (ID: %d)", name, shelfCode, level, column, existingLocation.ID)
+								} else if errors.Is(err, gorm.ErrRecordNotFound) {
+									// Crear nueva ubicación física
+									newLocation := models.PhysicalLocationModel{
+										ShelfId: shelf.ID,
+										Level:   level,
+										Column:  column,
+									}
+									if err := s.db.Create(&newLocation).Error; err != nil {
+										log.Printf("[IMPORT] ERROR creando ubicación física para %s: %v", name, err)
+										result.Errors = append(result.Errors, fmt.Sprintf("Fila %d: error creando ubicación física: %v", i+1, err))
+									} else {
+										physicalLocationID = &newLocation.ID
+										log.Printf("[IMPORT] Ubicación física creada para %s: Estante %d, Nivel %d, Columna %s (ID: %d)", name, shelfCode, level, column, newLocation.ID)
+									}
+								} else {
+									log.Printf("[IMPORT] ERROR buscando ubicación física para %s: %v", name, err)
+									result.Errors = append(result.Errors, fmt.Sprintf("Fila %d: error buscando ubicación física: %v", i+1, err))
+								}
+							}
 						}
 					}
+				} else {
+					log.Printf("[IMPORT] Fila %d: código de estante inválido '%s', omitiendo ubicación física", i+1, shelfCodeStr)
 				}
+			}
+		}
 
-				// Asociar ficha histórica
-				if topoData.fichaHistorica != "" {
-					if strings.HasPrefix(topoData.fichaHistorica, "http://") || strings.HasPrefix(topoData.fichaHistorica, "https://") || strings.Contains(topoData.fichaHistorica, string(filepath.Separator)) {
-						log.Printf("[IMPORT] Descargando ficha histórica para %s desde: %s", name, topoData.fichaHistorica)
-						if err := s.associateHistoricalRecordFromPath(&artefact, topoData.fichaHistorica); err != nil {
-							log.Printf("[IMPORT] ERROR asociando ficha histórica para %s: %v", name, err)
-							result.Errors = append(result.Errors, fmt.Sprintf("Fila %d: error asociando ficha histórica: %v", i+1, err))
-						} else {
-							log.Printf("[IMPORT] Ficha histórica asociada exitosamente para %s", name)
-						}
+		// Actualizar artefacto con PhysicalLocationID si se asignó
+		if physicalLocationID != nil {
+			if err := s.db.Model(&artefact).Update("physical_location_id", *physicalLocationID).Error; err != nil {
+				log.Printf("[IMPORT] ERROR actualizando ubicación física para %s: %v", name, err)
+				result.Errors = append(result.Errors, fmt.Sprintf("Fila %d: error actualizando ubicación física: %v", i+1, err))
+			} else {
+				log.Printf("[IMPORT] Ubicación física asignada a %s (PhysicalLocationID: %d)", name, *physicalLocationID)
+			}
+		}
+
+		// ===============================
+		// 3.4. Asociar archivos desde columnas de la misma hoja
+		// ===============================
+		// Col T (19): Foto - puede ser URL, ruta de archivo o código numérico
+		if len(row) > 19 {
+			fotoPath := strings.TrimSpace(row[19])
+			if fotoPath != "" {
+				// Intentar leer hipervínculo si existe
+				cellT := fmt.Sprintf("%s%d", "T", i+1)
+				hasHyperlink, hyperlinkTarget, _ := f.GetCellHyperLink(sheetName, cellT)
+				if hasHyperlink && hyperlinkTarget != "" {
+					fotoPath = hyperlinkTarget
+				}
+				
+				if strings.HasPrefix(fotoPath, "http://") || strings.HasPrefix(fotoPath, "https://") || strings.Contains(fotoPath, string(filepath.Separator)) {
+					// Es una ruta de archivo o URL
+					log.Printf("[IMPORT] Descargando foto para %s desde: %s", name, fotoPath)
+					if err := s.associatePictureFromPath(&artefact, fotoPath); err != nil {
+						log.Printf("[IMPORT] ERROR asociando foto para %s: %v", name, err)
+						result.Errors = append(result.Errors, fmt.Sprintf("Fila %d: error asociando foto: %v", i+1, err))
 					} else {
-						if err := s.associateHistoricalRecordFromCode(&artefact, topoData.fichaHistorica); err != nil {
-							result.Errors = append(result.Errors, fmt.Sprintf("Fila %d: error asociando ficha histórica: %v", i+1, err))
-						}
+						log.Printf("[IMPORT] Foto asociada exitosamente para %s", name)
+					}
+				} else {
+					// Es solo un código, buscar archivo
+					if err := s.associatePictureFromCode(&artefact, fotoPath); err != nil {
+						result.Errors = append(result.Errors, fmt.Sprintf("Fila %d: error asociando foto: %v", i+1, err))
 					}
 				}
+			}
+		}
 
-				// Asociar ficha INPL
-				if topoData.fichaINPL != "" {
-					if strings.HasPrefix(topoData.fichaINPL, "http://") || strings.HasPrefix(topoData.fichaINPL, "https://") || strings.Contains(topoData.fichaINPL, string(filepath.Separator)) {
-						log.Printf("[IMPORT] Descargando ficha INPL para %s desde: %s", name, topoData.fichaINPL)
-						if err := s.associateINPLFromPath(&artefact, topoData.fichaINPL); err != nil {
-							log.Printf("[IMPORT] ERROR asociando ficha INPL para %s: %v", name, err)
-							result.Errors = append(result.Errors, fmt.Sprintf("Fila %d: error asociando ficha INPL: %v", i+1, err))
-						} else {
-							log.Printf("[IMPORT] Ficha INPL asociada exitosamente para %s", name)
-						}
+		// Col U (20): Ficha INPL - puede ser URL, ruta de archivo o código numérico
+		if len(row) > 20 {
+			inplPath := strings.TrimSpace(row[20])
+			if inplPath != "" {
+				// Intentar leer hipervínculo si existe
+				cellU := fmt.Sprintf("%s%d", "U", i+1)
+				hasHyperlink, hyperlinkTarget, _ := f.GetCellHyperLink(sheetName, cellU)
+				if hasHyperlink && hyperlinkTarget != "" {
+					inplPath = hyperlinkTarget
+				}
+				
+				if strings.HasPrefix(inplPath, "http://") || strings.HasPrefix(inplPath, "https://") || strings.Contains(inplPath, string(filepath.Separator)) {
+					log.Printf("[IMPORT] Descargando ficha INPL para %s desde: %s", name, inplPath)
+					if err := s.associateINPLFromPath(&artefact, inplPath); err != nil {
+						log.Printf("[IMPORT] ERROR asociando ficha INPL para %s: %v", name, err)
+						result.Errors = append(result.Errors, fmt.Sprintf("Fila %d: error asociando ficha INPL: %v", i+1, err))
 					} else {
-						if err := s.associateINPLFromCode(&artefact, topoData.fichaINPL); err != nil {
-							result.Errors = append(result.Errors, fmt.Sprintf("Fila %d: error asociando ficha INPL: %v", i+1, err))
-						}
+						log.Printf("[IMPORT] Ficha INPL asociada exitosamente para %s", name)
+					}
+				} else {
+					if err := s.associateINPLFromCode(&artefact, inplPath); err != nil {
+						result.Errors = append(result.Errors, fmt.Sprintf("Fila %d: error asociando ficha INPL: %v", i+1, err))
+					}
+				}
+			}
+		}
+
+		// Col V (21): Ficha Histórica - puede ser URL, ruta de archivo o código numérico
+		if len(row) > 21 {
+			historicaPath := strings.TrimSpace(row[21])
+			if historicaPath != "" {
+				// Intentar leer hipervínculo si existe
+				cellV := fmt.Sprintf("%s%d", "V", i+1)
+				hasHyperlink, hyperlinkTarget, _ := f.GetCellHyperLink(sheetName, cellV)
+				if hasHyperlink && hyperlinkTarget != "" {
+					historicaPath = hyperlinkTarget
+				}
+				
+				if strings.HasPrefix(historicaPath, "http://") || strings.HasPrefix(historicaPath, "https://") || strings.Contains(historicaPath, string(filepath.Separator)) {
+					log.Printf("[IMPORT] Descargando ficha histórica para %s desde: %s", name, historicaPath)
+					if err := s.associateHistoricalRecordFromPath(&artefact, historicaPath); err != nil {
+						log.Printf("[IMPORT] ERROR asociando ficha histórica para %s: %v", name, err)
+						result.Errors = append(result.Errors, fmt.Sprintf("Fila %d: error asociando ficha histórica: %v", i+1, err))
+					} else {
+						log.Printf("[IMPORT] Ficha histórica asociada exitosamente para %s", name)
+					}
+				} else {
+					if err := s.associateHistoricalRecordFromCode(&artefact, historicaPath); err != nil {
+						result.Errors = append(result.Errors, fmt.Sprintf("Fila %d: error asociando ficha histórica: %v", i+1, err))
 					}
 				}
 			}
