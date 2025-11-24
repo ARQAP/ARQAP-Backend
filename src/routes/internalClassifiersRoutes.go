@@ -15,7 +15,8 @@ func SetupInternalClassifiersRoutes(router *gin.Engine, service *services.Intern
 	internalClassifier.Use(middleware.AuthMiddleware())
 	{
 		internalClassifier.GET("/", internalClassifierController.GetAllInternalClassifiers)
-		internalClassifier.GET("/:id", internalClassifierController.GetInternalClassifierByID)
+		internalClassifier.GET("/names", internalClassifierController.GetAllInternalClassifierNames)
+		internalClassifier.GET("/name/:name", internalClassifierController.GetInternalClassifiersByName)
 		internalClassifier.POST("/", internalClassifierController.CreateInternalClassifier)
 		internalClassifier.PUT("/:id", internalClassifierController.UpdateInternalClassifier)
 		internalClassifier.DELETE("/:id", internalClassifierController.DeleteInternalClassifier)

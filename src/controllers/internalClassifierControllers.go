@@ -2,7 +2,9 @@ package controllers
 
 import (
 	"net/http"
+	"sort"
 	"strconv"
+	"strings"
 
 	"github.com/ARQAP/ARQAP-Backend/src/models"
 	"github.com/ARQAP/ARQAP-Backend/src/services"
@@ -27,6 +29,41 @@ func (c *InternalClassifierController) GetAllInternalClassifiers(ctx *gin.Contex
 	ctx.JSON(http.StatusOK, internalClassifiers)
 }
 
+// GetInternalClassifiersByName handles GET requests to retrieve internal classifiers by name
+func (c *InternalClassifierController) GetInternalClassifiersByName(ctx *gin.Context) {
+	name := ctx.Param("name")
+	if name == "" {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": "name parameter is required"})
+		return
+	}
+	internalClassifiers, err := c.service.GetInternalClassifiersByName(name)
+	if err != nil {
+		ctx.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	ctx.JSON(http.StatusOK, internalClassifiers)
+}
+
+// GetAllInternalClassifierNames handles GET requests to retrieve distinct classifier names
+func (c *InternalClassifierController) GetAllInternalClassifierNames(ctx *gin.Context) {
+	names, err := c.service.GetAllInternalClassifierNames()
+	if err != nil {
+		ctx.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	// Fallback deduplication in controller to guarantee no repeats
+	unique := make(map[string]struct{}, len(names))
+	var out []string
+	for _, n := range names {
+		if _, ok := unique[n]; !ok {
+			unique[n] = struct{}{}
+			out = append(out, n)
+		}
+	}
+	sort.Strings(out)
+	ctx.JSON(http.StatusOK, out)
+}
+
 // CreateInternalClassifier handles POST requests to create a new internalClassifier record
 func (c *InternalClassifierController) CreateInternalClassifier(ctx *gin.Context) {
 	var internalClassifier models.InternalClassifierModel
@@ -36,6 +73,10 @@ func (c *InternalClassifierController) CreateInternalClassifier(ctx *gin.Context
 	}
 	createdInternalClassifier, err := c.service.CreateInternalClassifier(&internalClassifier)
 	if err != nil {
+		if strings.Contains(err.Error(), "already exists") {
+			ctx.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
 		ctx.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -72,22 +113,14 @@ func (c *InternalClassifierController) UpdateInternalClassifier(ctx *gin.Context
 	}
 	updatedInternalClassifier, err := c.service.UpdateInternalClassifier(id, &internalClassifier)
 	if err != nil {
+		if strings.Contains(err.Error(), "already exists") {
+			ctx.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
 		ctx.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 	ctx.JSON(http.StatusOK, updatedInternalClassifier)
 }
 
-// GetInternalClassifierByID handles GET request to retrive a internalClassifier record by ID
-func (c *InternalClassifierController) GetInternalClassifierByID(ctx *gin.Context) {
-	idParam := ctx.Param("id")
-	id, err := strconv.Atoi(idParam)
-	if err != nil {
-		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Invalid InternalClassifier ID"})
-	}
-	internalClassifier, err := c.service.GetInternalClassifierByID(id)
-	if err != nil {
-		ctx.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-	}
-	ctx.JSON(http.StatusOK, internalClassifier)
-}
+// (GetById removed) GetInternalClassifierByID was removed because lookup by id is not required.
