@@ -18,4 +18,5 @@ type InternalMovementModel struct {
 	Observations           *string                `json:"observations" gorm:"type:text"`
 	RequesterId            *int                   `json:"requesterId" gorm:"column:requester_id"`
 	Requester              *RequesterModel        `json:"requester" gorm:"foreignKey:RequesterId;references:Id"`
+	GroupMovementId        *int                   `json:"groupMovementId" gorm:"column:group_movement_id;index"` // Para agrupar movimientos creados juntos
 }

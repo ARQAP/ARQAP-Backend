@@ -19,6 +19,7 @@ func SetupInternalMovementRoutes(router *gin.Engine, service *services.InternalM
 		internalMovementGroup.GET("/artefact/:artefactId", internalMovementController.GetInternalMovementsByArtefactID)
 		internalMovementGroup.GET("/artefact/:artefactId/active", internalMovementController.GetActiveInternalMovementByArtefactID)
 		internalMovementGroup.POST("/", internalMovementController.CreateInternalMovement)
+		internalMovementGroup.POST("/batch", internalMovementController.CreateBatchInternalMovements)
 		internalMovementGroup.PUT("/:id", internalMovementController.UpdateInternalMovement)
 		internalMovementGroup.DELETE("/:id", internalMovementController.DeleteInternalMovement)
 	}

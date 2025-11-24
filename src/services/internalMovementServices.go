@@ -21,6 +21,115 @@ func stringPtr(s string) *string {
 	return &s
 }
 
+// CreateBatchInternalMovements creates multiple internal movements in a single transaction
+// All movements in the batch share the same groupMovementId for visual grouping
+func (s *InternalMovementService) CreateBatchInternalMovements(movements []*models.InternalMovementModel) ([]*models.InternalMovementModel, error) {
+	if len(movements) == 0 {
+		return []*models.InternalMovementModel{}, nil
+	}
+
+	// Generate a unique group ID (using timestamp + random or just timestamp)
+	// For simplicity, we'll use the current timestamp as the group ID
+	groupMovementId := int(time.Now().Unix())
+
+	var createdMovements []*models.InternalMovementModel
+
+	err := s.db.Transaction(func(tx *gorm.DB) error {
+		for _, movement := range movements {
+			// Assign the same group ID to all movements in the batch
+			movement.GroupMovementId = &groupMovementId
+
+			// Use the existing CreateInternalMovement logic for each movement
+			// But we need to do it within this transaction
+			// 1) Buscar movimientos activos previos de la misma pieza
+			var activeMovements []models.InternalMovementModel
+			if err := tx.Where("artefact_id = ? AND return_date IS NULL AND return_time IS NULL", movement.ArtefactId).
+				Order("movement_date DESC, movement_time DESC").
+				Find(&activeMovements).Error; err != nil {
+				return err
+			}
+
+			// Si hay un movimiento activo previo, usar su ubicación destino como origen del nuevo movimiento
+			if len(activeMovements) > 0 {
+				mostRecentActive := activeMovements[0]
+				if movement.FromPhysicalLocationId == nil && mostRecentActive.ToPhysicalLocationId != nil {
+					movement.FromPhysicalLocationId = mostRecentActive.ToPhysicalLocationId
+				}
+
+				// Finalizar todos los movimientos activos previos
+				now := time.Now()
+				for _, activeMovement := range activeMovements {
+					activeMovement.ReturnDate = &now
+					activeMovement.ReturnTime = &now
+					if err := tx.Model(&activeMovement).Updates(map[string]interface{}{
+						"return_date": activeMovement.ReturnDate,
+						"return_time": activeMovement.ReturnTime,
+					}).Error; err != nil {
+						return err
+					}
+				}
+			} else {
+				// Si no hay movimiento activo previo, obtener la ubicación actual de la pieza
+				var artefact models.ArtefactModel
+				if err := tx.First(&artefact, movement.ArtefactId).Error; err != nil {
+					return err
+				}
+
+				if movement.FromPhysicalLocationId == nil && artefact.PhysicalLocationID != nil {
+					fromLocationId := *artefact.PhysicalLocationID
+					movement.FromPhysicalLocationId = &fromLocationId
+				}
+			}
+
+			// 2) Crear el nuevo movimiento
+			if err := tx.Create(movement).Error; err != nil {
+				return err
+			}
+
+			// 3) Mover la pieza a la ubicación destino del nuevo movimiento
+			if movement.ArtefactId != 0 {
+				updateData := map[string]interface{}{}
+				if movement.ToPhysicalLocationId != nil {
+					updateData["physical_location_id"] = *movement.ToPhysicalLocationId
+				} else {
+					updateData["physical_location_id"] = nil
+				}
+
+				if err := tx.Model(&models.ArtefactModel{}).
+					Where("id = ?", movement.ArtefactId).
+					Updates(updateData).Error; err != nil {
+					return err
+				}
+			}
+
+			createdMovements = append(createdMovements, movement)
+		}
+
+		return nil
+	})
+
+	if err != nil {
+		return nil, err
+	}
+
+	// Preload relationships for all created movements
+	for i := range createdMovements {
+		if err := s.db.
+			Preload("Artefact").
+			Preload("Artefact.InternalClassifier").
+			Preload("FromPhysicalLocation").
+			Preload("FromPhysicalLocation.Shelf").
+			Preload("ToPhysicalLocation").
+			Preload("ToPhysicalLocation.Shelf").
+			Preload("Requester").
+			First(createdMovements[i], createdMovements[i].Id).Error; err != nil {
+			return nil, err
+		}
+	}
+
+	return createdMovements, nil
+}
+
 // GetAllInternalMovements retrieves all InternalMovement records from the database
 func (s *InternalMovementService) GetAllInternalMovements() ([]models.InternalMovementModel, error) {
 	var movements []models.InternalMovementModel

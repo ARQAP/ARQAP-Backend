@@ -95,6 +95,28 @@ func (c *InternalMovementController) CreateInternalMovement(ctx *gin.Context) {
 	ctx.JSON(http.StatusCreated, createdMovement)
 }
 
+// CreateBatchInternalMovements handles POST requests to create multiple internal movements in a batch
+func (c *InternalMovementController) CreateBatchInternalMovements(ctx *gin.Context) {
+	var movements []models.InternalMovementModel
+	if err := ctx.ShouldBindJSON(&movements); err != nil {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Convert to pointers
+	movementPointers := make([]*models.InternalMovementModel, len(movements))
+	for i := range movements {
+		movementPointers[i] = &movements[i]
+	}
+
+	createdMovements, err := c.service.CreateBatchInternalMovements(movementPointers)
+	if err != nil {
+		ctx.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	ctx.JSON(http.StatusCreated, createdMovements)
+}
+
 // UpdateInternalMovement handles PUT requests to update an existing internal movement record
 func (c *InternalMovementController) UpdateInternalMovement(ctx *gin.Context) {
 	idParam := ctx.Param("id")
