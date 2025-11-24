@@ -727,6 +727,7 @@ func (s *ArtefactService) ImportArtefactsFromExcel(r io.Reader) (*ImportResult, 
 	// ==========================================
 	collectionCache := make(map[string]int) // key: nombre colección
 	archaeologistCache := make(map[string]int)
+	internalClassifierCache := make(map[string]int) // key: "nombre|numero" o "nombre|NULL"
 	countryCache := make(map[string]int)            // key: nombre país
 	regionCache := make(map[string]int)             // key: "nombre_region|country_id"
 	archaeologicalSiteCache := make(map[string]int) // key: "nombre_sitio|region_id"
@@ -854,6 +855,96 @@ func (s *ArtefactService) ImportArtefactsFromExcel(r io.Reader) (*ImportResult, 
 						idCopy := arch.Id
 						archaeologistID = &idCopy
 					}
+				}
+			}
+		}
+
+		// ---------------------------------
+		// 3.2.5. Clasificador Interno (Col C = índice 2: código, Col D = índice 3: etiqueta)
+		// ---------------------------------
+		var internalClassifierID *int
+		
+		// Leer columna C (índice 2): código/número del clasificador
+		var classifierNumber *int
+		if len(row) > 2 {
+			classifierCodeStr := strings.TrimSpace(row[2])
+			if classifierCodeStr != "" {
+				var num int
+				if _, err := fmt.Sscanf(classifierCodeStr, "%d", &num); err == nil {
+					classifierNumber = &num
+				} else {
+					log.Printf("[IMPORT] Fila %d: código de clasificador inválido '%s', se omitirá el número", i+1, classifierCodeStr)
+				}
+			}
+		}
+
+		// Leer columna D (índice 3): etiqueta/nombre del clasificador
+		classifierName := ""
+		if len(row) > 3 {
+			classifierName = standardizeText(strings.TrimSpace(row[3]))
+		}
+
+		// Solo procesar si tenemos al menos el nombre del clasificador
+		if classifierName != "" {
+			// Crear clave para el cache: "nombre|numero" o "nombre|NULL"
+			cacheKey := classifierName
+			if classifierNumber != nil {
+				cacheKey = fmt.Sprintf("%s|%d", classifierName, *classifierNumber)
+			} else {
+				cacheKey = fmt.Sprintf("%s|NULL", classifierName)
+			}
+
+			// Verificar si ya está en cache
+			if cachedID, ok := internalClassifierCache[cacheKey]; ok {
+				internalClassifierID = &cachedID
+				log.Printf("[IMPORT] Clasificador interno encontrado en cache para %s: ID %d", cacheKey, cachedID)
+			} else {
+				// Buscar en la base de datos con búsqueda case-insensitive
+				// Usamos LOWER() para comparar sin importar mayúsculas/minúsculas
+				var existingClassifier models.InternalClassifierModel
+				var query *gorm.DB
+				
+				// Normalizar el nombre a minúsculas para la comparación
+				classifierNameLower := strings.ToLower(classifierName)
+				
+				if classifierNumber != nil {
+					// Buscar por nombre (case-insensitive) y número
+					query = s.db.Where("LOWER(name) = ? AND number = ?", classifierNameLower, *classifierNumber).First(&existingClassifier)
+				} else {
+					// Buscar por nombre (case-insensitive) sin número
+					query = s.db.Where("LOWER(name) = ? AND number IS NULL", classifierNameLower).First(&existingClassifier)
+				}
+
+				if errors.Is(query.Error, gorm.ErrRecordNotFound) {
+					// Clasificador no existe, crearlo con el nombre normalizado
+					newClassifier := models.InternalClassifierModel{
+						Name:   classifierName, // Usamos el nombre normalizado (Title Case)
+						Number: classifierNumber,
+					}
+					if err := s.db.Create(&newClassifier).Error; err != nil {
+						result.Errors = append(result.Errors, fmt.Sprintf(
+							"Fila %d: no se pudo crear clasificador interno %s: %v",
+							i+1, cacheKey, err,
+						))
+						log.Printf("[IMPORT] ERROR creando clasificador interno %s: %v", cacheKey, err)
+					} else {
+						internalClassifierCache[cacheKey] = newClassifier.Id
+						internalClassifierID = &newClassifier.Id
+						log.Printf("[IMPORT] Clasificador interno creado: %s (ID: %d)", cacheKey, newClassifier.Id)
+					}
+				} else if query.Error != nil {
+					// Error distinto a not found
+					result.Errors = append(result.Errors, fmt.Sprintf(
+						"Fila %d: error buscando clasificador interno %s: %v",
+						i+1, cacheKey, query.Error,
+					))
+					log.Printf("[IMPORT] ERROR buscando clasificador interno %s: %v", cacheKey, query.Error)
+				} else {
+					// Clasificador encontrado (puede tener diferente capitalización en la BD)
+					// Actualizar el cache con la clave normalizada para futuras búsquedas
+					internalClassifierCache[cacheKey] = existingClassifier.Id
+					internalClassifierID = &existingClassifier.Id
+					log.Printf("[IMPORT] Clasificador interno encontrado: %s (ID: %d, nombre en BD: %s)", cacheKey, existingClassifier.Id, existingClassifier.Name)
 				}
 			}
 		}
@@ -1065,6 +1156,7 @@ func (s *ArtefactService) ImportArtefactsFromExcel(r io.Reader) (*ImportResult, 
 			CollectionID:         collectionID,
 			ArchaeologistID:      archaeologistID,
 			ArchaeologicalSiteId: archaeologicalSiteID,
+			InternalClassifierID: internalClassifierID,
 		}
 
 		if err := s.db.Create(&artefact).Error; err != nil {
