@@ -927,6 +927,124 @@ func (s *ArtefactService) ImportArtefactsFromExcel(r io.Reader) (*ImportResult, 
 		log.Printf("[IMPORT] Artefacto creado: %s (ID: %d)", name, artefact.ID)
 
 		// ===============================
+		// 3.3.5. Asignar ubicación física (Col W, X, Y = índices 22, 23, 24)
+		// ===============================
+		var physicalLocationID *int
+		if len(row) > 22 {
+			shelfCodeStr := strings.TrimSpace(row[22]) // Col W: código de estante
+			if shelfCodeStr != "" {
+				// Convertir código de estante a entero
+				var shelfCode int
+				if _, err := fmt.Sscanf(shelfCodeStr, "%d", &shelfCode); err == nil {
+					// Validar que el código esté en el rango válido (1-30)
+					if shelfCode < 1 || shelfCode > 30 {
+						log.Printf("[IMPORT] Fila %d: código de estante %d fuera del rango válido (1-30), omitiendo ubicación física", i+1, shelfCode)
+						result.Errors = append(result.Errors, fmt.Sprintf("Fila %d: código de estante %d fuera del rango válido (1-30)", i+1, shelfCode))
+					} else {
+						// Buscar estante por código
+						var shelf models.ShelfModel
+						err := s.db.Where("code = ?", shelfCode).First(&shelf).Error
+						if errors.Is(err, gorm.ErrRecordNotFound) {
+							// Estante no existe, crearlo automáticamente
+							log.Printf("[IMPORT] Estante con código %d no encontrado, creándolo automáticamente...", shelfCode)
+							shelf = models.ShelfModel{
+								Code: shelfCode,
+							}
+							if err := s.db.Create(&shelf).Error; err != nil {
+								log.Printf("[IMPORT] ERROR creando estante con código %d: %v", shelfCode, err)
+								result.Errors = append(result.Errors, fmt.Sprintf("Fila %d: error creando estante con código %d: %v", i+1, shelfCode, err))
+							} else {
+								log.Printf("[IMPORT] Estante con código %d creado exitosamente (ID: %d)", shelfCode, shelf.ID)
+							}
+						} else if err != nil {
+							log.Printf("[IMPORT] ERROR buscando estante con código %d: %v", shelfCode, err)
+							result.Errors = append(result.Errors, fmt.Sprintf("Fila %d: error buscando estante con código %d: %v", i+1, shelfCode, err))
+						}
+						
+						// Si tenemos el estante (ya existía o se creó), continuar con la asignación
+						if shelf.ID > 0 {
+							// Leer nivel (Col X = índice 23)
+							var level models.LevelNumber
+							hasValidLevel := false
+							if len(row) > 23 {
+								levelStr := strings.TrimSpace(row[23])
+								if levelStr != "" {
+									var levelNum int
+									if _, err := fmt.Sscanf(levelStr, "%d", &levelNum); err == nil {
+										// Validar que el nivel esté entre 1 y 4
+										if levelNum >= 1 && levelNum <= 4 {
+											level = models.LevelNumber(levelNum)
+											hasValidLevel = true
+										} else {
+											log.Printf("[IMPORT] Fila %d: nivel inválido %d (debe ser 1-4), omitiendo ubicación física", i+1, levelNum)
+										}
+									}
+								}
+							}
+
+							// Leer columna (Col Y = índice 24)
+							var column models.ColumnLetter
+							hasValidColumn := false
+							if len(row) > 24 {
+								columnStr := strings.TrimSpace(strings.ToUpper(row[24]))
+								if columnStr != "" {
+									// Validar que sea A, B, C o D
+									if columnStr == "A" || columnStr == "B" || columnStr == "C" || columnStr == "D" {
+										column = models.ColumnLetter(columnStr)
+										hasValidColumn = true
+									} else {
+										log.Printf("[IMPORT] Fila %d: columna inválida %s (debe ser A, B, C o D), omitiendo ubicación física", i+1, columnStr)
+									}
+								}
+							}
+
+							// Si tenemos nivel y columna válidos, buscar o crear PhysicalLocation
+							if hasValidLevel && hasValidColumn {
+								var existingLocation models.PhysicalLocationModel
+								// Usar comillas dobles para escapar "column" que es palabra reservada en PostgreSQL
+								err := s.db.Where(`shelf_id = ? AND level = ? AND "column" = ?`, shelf.ID, level, column).First(&existingLocation).Error
+								if err == nil {
+									// Ubicación ya existe, usar su ID
+									physicalLocationID = &existingLocation.ID
+									log.Printf("[IMPORT] Ubicación física encontrada para %s: Estante %d, Nivel %d, Columna %s (ID: %d)", name, shelfCode, level, column, existingLocation.ID)
+								} else if errors.Is(err, gorm.ErrRecordNotFound) {
+									// Crear nueva ubicación física
+									newLocation := models.PhysicalLocationModel{
+										ShelfId: shelf.ID,
+										Level:   level,
+										Column:  column,
+									}
+									if err := s.db.Create(&newLocation).Error; err != nil {
+										log.Printf("[IMPORT] ERROR creando ubicación física para %s: %v", name, err)
+										result.Errors = append(result.Errors, fmt.Sprintf("Fila %d: error creando ubicación física: %v", i+1, err))
+									} else {
+										physicalLocationID = &newLocation.ID
+										log.Printf("[IMPORT] Ubicación física creada para %s: Estante %d, Nivel %d, Columna %s (ID: %d)", name, shelfCode, level, column, newLocation.ID)
+									}
+								} else {
+									log.Printf("[IMPORT] ERROR buscando ubicación física para %s: %v", name, err)
+									result.Errors = append(result.Errors, fmt.Sprintf("Fila %d: error buscando ubicación física: %v", i+1, err))
+								}
+							}
+						}
+					}
+				} else {
+					log.Printf("[IMPORT] Fila %d: código de estante inválido '%s', omitiendo ubicación física", i+1, shelfCodeStr)
+				}
+			}
+		}
+
+		// Actualizar artefacto con PhysicalLocationID si se asignó
+		if physicalLocationID != nil {
+			if err := s.db.Model(&artefact).Update("physical_location_id", *physicalLocationID).Error; err != nil {
+				log.Printf("[IMPORT] ERROR actualizando ubicación física para %s: %v", name, err)
+				result.Errors = append(result.Errors, fmt.Sprintf("Fila %d: error actualizando ubicación física: %v", i+1, err))
+			} else {
+				log.Printf("[IMPORT] Ubicación física asignada a %s (PhysicalLocationID: %d)", name, *physicalLocationID)
+			}
+		}
+
+		// ===============================
 		// 3.4. Asociar archivos desde columnas de la misma hoja
 		// ===============================
 		// Col T (19): Foto - puede ser URL, ruta de archivo o código numérico
