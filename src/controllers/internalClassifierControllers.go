@@ -1,10 +1,11 @@
 package controllers
 
 import (
+	"errors"
+	"fmt"
 	"net/http"
 	"sort"
 	"strconv"
-	"strings"
 
 	"github.com/ARQAP/ARQAP-Backend/src/models"
 	"github.com/ARQAP/ARQAP-Backend/src/services"
@@ -73,8 +74,14 @@ func (c *InternalClassifierController) CreateInternalClassifier(ctx *gin.Context
 	}
 	createdInternalClassifier, err := c.service.CreateInternalClassifier(&internalClassifier)
 	if err != nil {
-		if strings.Contains(err.Error(), "already exists") {
-			ctx.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		var dupErr *services.DuplicateNameNumberError
+		if errors.As(err, &dupErr) {
+			// Diferenciar mensaje según si Number es nil o no
+			if dupErr.Number == nil {
+				ctx.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("El clasificador con el nombre '%s' ya se encuentra creado.", dupErr.Name)})
+			} else {
+				ctx.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("El clasificador '%s' con número %d ya se encuentra creado.", dupErr.Name, *dupErr.Number)})
+			}
 			return
 		}
 		ctx.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -113,8 +120,13 @@ func (c *InternalClassifierController) UpdateInternalClassifier(ctx *gin.Context
 	}
 	updatedInternalClassifier, err := c.service.UpdateInternalClassifier(id, &internalClassifier)
 	if err != nil {
-		if strings.Contains(err.Error(), "already exists") {
-			ctx.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		var dupErr *services.DuplicateNameNumberError
+		if errors.As(err, &dupErr) {
+			if dupErr.Number == nil {
+				ctx.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("El clasificador con el nombre '%s' ya se encuentra creado.", dupErr.Name)})
+			} else {
+				ctx.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("El clasificador '%s' con número %d ya se encuentra creado.", dupErr.Name, *dupErr.Number)})
+			}
 			return
 		}
 		ctx.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})

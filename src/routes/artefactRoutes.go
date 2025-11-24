@@ -20,6 +20,7 @@ func SetupArtefactRoutes(router *gin.Engine, service *services.ArtefactService) 
 		artefactGroup.POST("/", controller.CreateArtefact)
 		artefactGroup.POST("/with-mentions", controller.CreateArtefactWithMentions)
 		artefactGroup.PUT("/:id", controller.UpdateArtefact)
+		artefactGroup.PUT("/:id/with-classifier", controller.UpdateArtefactWithInternalClassifier)
 		artefactGroup.DELETE("/:id", controller.DeleteArtefact)
 
 		// Upload

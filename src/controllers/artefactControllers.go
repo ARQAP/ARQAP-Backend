@@ -101,6 +101,35 @@ func (ac *ArtefactController) UpdateArtefact(c *gin.Context) {
 		return
 	}
 
+	if err := ac.service.UpdateArtefact(id, &artefact); err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, artefact)
+}
+
+// UpdateArtefactWithInternalClassifier updates an artefact with optional internal classifier in a transaction
+func (ac *ArtefactController) UpdateArtefactWithInternalClassifier(c *gin.Context) {
+	id, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		c.JSON(400, gin.H{"error": "Invalid ID format"})
+		return
+	}
+
+	var payload struct {
+		Artefact           models.ArtefactModel              `json:"artefact" binding:"required"`
+		InternalClassifier *services.InternalClassifierInput `json:"internalClassifier,omitempty"`
+	}
+
+	if err := c.ShouldBindJSON(&payload); err != nil {
+		fmt.Printf("[UpdateArtefactWithInternalClassifier] Error binding JSON: %v\n", err)
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+
+	fmt.Printf("[UpdateArtefactWithInternalClassifier] Payload received: artefact=%+v, classifier=%+v\n", payload.Artefact, payload.InternalClassifier)
+	artefact := payload.Artefact
+
 	// Validaciones obligatorias
 	if strings.TrimSpace(artefact.Name) == "" {
 		c.JSON(400, gin.H{"error": "El nombre es obligatorio"})
@@ -112,11 +141,20 @@ func (ac *ArtefactController) UpdateArtefact(c *gin.Context) {
 		return
 	}
 
-	if err := ac.service.UpdateArtefact(id, &artefact); err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
+	fmt.Printf("[UpdateArtefactWithInternalClassifier] Calling service with id=%d\n", id)
+	if err := ac.service.UpdateArtefactWithInternalClassifier(id, &artefact, payload.InternalClassifier); err != nil {
+		fmt.Printf("[UpdateArtefactWithInternalClassifier] Service error: %v\n", err)
+		// Usar 400 para errores de validación (clasificador duplicado)
+		if strings.Contains(err.Error(), "ya existe un artefacto") {
+			c.JSON(400, gin.H{"error": err.Error()})
+		} else {
+			c.JSON(500, gin.H{"error": err.Error()})
+		}
 		return
 	}
-	c.JSON(200, gin.H{"message": "Artefact updated successfully"})
+	fmt.Printf("[UpdateArtefactWithInternalClassifier] Success\n")
+
+	c.JSON(200, artefact)
 }
 
 func (ac *ArtefactController) DeleteArtefact(c *gin.Context) {
@@ -132,6 +170,8 @@ func (ac *ArtefactController) DeleteArtefact(c *gin.Context) {
 	}
 	c.JSON(200, gin.H{"message": "Artefact deleted successfully"})
 }
+
+// ======================= ARCHIVOS =======================
 
 // ======================= FOTO =======================
 

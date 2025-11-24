@@ -8,6 +8,23 @@ import (
 	"gorm.io/gorm"
 )
 
+// DuplicateNameNumberError representa un intento de crear/actualizar un InternalClassifier
+// cuyo par (name, number) ya existe en la base de datos.
+type DuplicateNameNumberError struct {
+	Name   string
+	Number *int
+}
+
+func (e *DuplicateNameNumberError) Error() string {
+	if e == nil {
+		return "duplicate internal classifier"
+	}
+	if e.Number == nil {
+		return fmt.Sprintf("duplicate internal classifier name '%s' with null number", e.Name)
+	}
+	return fmt.Sprintf("duplicate internal classifier name '%s' and number %d", e.Name, *e.Number)
+}
+
 type InternalClassifierService struct {
 	db *gorm.DB
 }
@@ -68,11 +85,7 @@ func (s *InternalClassifierService) CreateInternalClassifier(internalClassifier 
 		res = s.db.Where("name = ? AND number = ?", internalClassifier.Name, *internalClassifier.Number).First(&existing)
 	}
 	if res.Error == nil {
-		numStr := "null"
-		if internalClassifier.Number != nil {
-			numStr = fmt.Sprintf("%d", *internalClassifier.Number)
-		}
-		return nil, fmt.Errorf("internal classifier with name '%s' and number %s already exists", internalClassifier.Name, numStr)
+		return nil, &DuplicateNameNumberError{Name: internalClassifier.Name, Number: internalClassifier.Number}
 	}
 	if res.Error != nil && !errors.Is(res.Error, gorm.ErrRecordNotFound) {
 		return nil, res.Error
@@ -107,11 +120,7 @@ func (s *InternalClassifierService) UpdateInternalClassifier(id int, updatedInte
 		res = s.db.Where("name = ? AND number = ? AND id <> ?", updatedInternalClassifier.Name, *updatedInternalClassifier.Number, id).First(&existing)
 	}
 	if res.Error == nil {
-		numStr := "null"
-		if updatedInternalClassifier.Number != nil {
-			numStr = fmt.Sprintf("%d", *updatedInternalClassifier.Number)
-		}
-		return nil, fmt.Errorf("internal classifier with name '%s' and number %s already exists", updatedInternalClassifier.Name, numStr)
+		return nil, &DuplicateNameNumberError{Name: updatedInternalClassifier.Name, Number: updatedInternalClassifier.Number}
 	}
 	if res.Error != nil && !errors.Is(res.Error, gorm.ErrRecordNotFound) {
 		return nil, res.Error

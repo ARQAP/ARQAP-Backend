@@ -40,9 +40,15 @@ type ArtefactService struct {
 	mutex sync.RWMutex
 }
 
+type InternalClassifierInput struct {
+	Name   string `json:"name" binding:"required"`
+	Number *int   `json:"number"`
+}
+
 type CreateArtefactWithMentionsDTO struct {
-	Artefact models.ArtefactModel  `json:"artefact"`
-	Mentions []models.MentionModel `json:"mentions"`
+	Artefact           models.ArtefactModel     `json:"artefact"`
+	InternalClassifier *InternalClassifierInput `json:"internalClassifier,omitempty"`
+	Mentions           []models.MentionModel    `json:"mentions"`
 }
 
 func NewArtefactService(db *gorm.DB) *ArtefactService {
@@ -112,33 +118,33 @@ func standardizeText(text string) string {
 	if text == "" {
 		return ""
 	}
-	
+
 	// Dividir en palabras (respetando espacios)
 	words := strings.Fields(text)
 	result := make([]string, 0, len(words))
-	
+
 	for _, word := range words {
 		if word == "" {
 			continue
 		}
-		
+
 		// Convertir a slice de runes para manejar correctamente caracteres UTF-8
 		runes := []rune(word)
 		if len(runes) == 0 {
 			continue
 		}
-		
+
 		// Primera letra a mayúscula
 		runes[0] = unicode.ToUpper(runes[0])
-		
+
 		// Resto a minúscula
 		for i := 1; i < len(runes); i++ {
 			runes[i] = unicode.ToLower(runes[i])
 		}
-		
+
 		result = append(result, string(runes))
 	}
-	
+
 	return strings.Join(result, " ")
 }
 
@@ -148,19 +154,19 @@ func standardizeTextToSentenceCase(text string) string {
 	if text == "" {
 		return ""
 	}
-	
+
 	// Convertir todo a minúsculas primero
 	text = strings.ToLower(text)
-	
+
 	// Convertir a slice de runes para manejar correctamente caracteres UTF-8
 	runes := []rune(strings.TrimSpace(text))
 	if len(runes) == 0 {
 		return ""
 	}
-	
+
 	// Primera letra a mayúscula
 	runes[0] = unicode.ToUpper(runes[0])
-	
+
 	return string(runes)
 }
 
@@ -264,6 +270,91 @@ func (s *ArtefactService) UpdateArtefact(id int, artefact *models.ArtefactModel)
 	}
 
 	// Invalidate specific and general cache
+	s.invalidateCache(fmt.Sprintf("artefact_%d", id))
+	s.invalidateCache("all_artefacts")
+	s.invalidateCache("artefact_summaries")
+
+	return nil
+}
+
+// UpdateArtefactWithInternalClassifier updates an artefact with optional internal classifier creation in a transaction
+func (s *ArtefactService) UpdateArtefactWithInternalClassifier(
+	id int,
+	artefact *models.ArtefactModel,
+	internalClassifierInput *InternalClassifierInput,
+) error {
+	err := s.db.Transaction(func(tx *gorm.DB) error {
+		// 1) Validar y crear/encontrar clasificador interno (si se provee)
+		if internalClassifierInput != nil {
+			// Primero: Verificar si ya existe OTRO artefacto con un clasificador que tenga el mismo name+number
+			var artefactWithSameClassifier models.ArtefactModel
+			var subQuery *gorm.DB
+
+			if internalClassifierInput.Number == nil {
+				subQuery = tx.Raw(`
+					SELECT a.* FROM artefact_models a
+					INNER JOIN internal_classifier_models ic ON a.internal_classifier_id = ic.id
+					WHERE ic.name = ? AND ic.number IS NULL AND a.id != ?
+					LIMIT 1
+				`, internalClassifierInput.Name, id).Scan(&artefactWithSameClassifier)
+			} else {
+				subQuery = tx.Raw(`
+					SELECT a.* FROM artefact_models a
+					INNER JOIN internal_classifier_models ic ON a.internal_classifier_id = ic.id
+					WHERE ic.name = ? AND ic.number = ? AND a.id != ?
+					LIMIT 1
+				`, internalClassifierInput.Name, *internalClassifierInput.Number, id).Scan(&artefactWithSameClassifier)
+			}
+
+			if subQuery.Error == nil && artefactWithSameClassifier.ID > 0 {
+				// Ya existe OTRO artefacto con ese clasificador
+				if internalClassifierInput.Number == nil {
+					return fmt.Errorf("ya existe un artefacto con el clasificador interno '%s' (sin número)", internalClassifierInput.Name)
+				}
+				return fmt.Errorf("ya existe un artefacto con el clasificador interno '%s - %d'", internalClassifierInput.Name, *internalClassifierInput.Number)
+			}
+
+			// Segundo: Buscar si el clasificador ya existe (huérfano o del mismo artefacto)
+			var existingClassifier models.InternalClassifierModel
+			var query *gorm.DB
+
+			if internalClassifierInput.Number == nil {
+				query = tx.Where("name = ? AND number IS NULL", internalClassifierInput.Name).First(&existingClassifier)
+			} else {
+				query = tx.Where("name = ? AND number = ?", internalClassifierInput.Name, *internalClassifierInput.Number).First(&existingClassifier)
+			}
+
+			if query.Error == nil {
+				// El clasificador existe, reutilizarlo
+				artefact.InternalClassifierID = &existingClassifier.Id
+			} else if errors.Is(query.Error, gorm.ErrRecordNotFound) {
+				// No existe, crear nuevo clasificador
+				newClassifier := models.InternalClassifierModel{
+					Name:   internalClassifierInput.Name,
+					Number: internalClassifierInput.Number,
+				}
+				if err := tx.Create(&newClassifier).Error; err != nil {
+					return err
+				}
+				artefact.InternalClassifierID = &newClassifier.Id
+			} else {
+				return query.Error
+			}
+		}
+
+		// 2) Update artefact
+		if err := tx.Where("id = ?", id).Updates(artefact).Error; err != nil {
+			return err
+		}
+
+		return nil
+	})
+
+	if err != nil {
+		return err
+	}
+
+	// Invalidate cache
 	s.invalidateCache(fmt.Sprintf("artefact_%d", id))
 	s.invalidateCache("all_artefacts")
 	s.invalidateCache("artefact_summaries")
@@ -413,12 +504,70 @@ func (s *ArtefactService) CreateArtefactWithMentions(dto *CreateArtefactWithMent
 	artefact := dto.Artefact
 
 	err := s.db.Transaction(func(tx *gorm.DB) error {
-		// 1) Crear artefacto
+		// 1) Validar y crear/encontrar clasificador interno (si se provee)
+		if dto.InternalClassifier != nil {
+			// Primero: Verificar si ya existe un artefacto con un clasificador que tenga el mismo name+number
+			var artefactWithSameClassifier models.ArtefactModel
+			var subQuery *gorm.DB
+
+			if dto.InternalClassifier.Number == nil {
+				subQuery = tx.Raw(`
+					SELECT a.* FROM artefact_models a
+					INNER JOIN internal_classifier_models ic ON a.internal_classifier_id = ic.id
+					WHERE ic.name = ? AND ic.number IS NULL
+					LIMIT 1
+				`, dto.InternalClassifier.Name).Scan(&artefactWithSameClassifier)
+			} else {
+				subQuery = tx.Raw(`
+					SELECT a.* FROM artefact_models a
+					INNER JOIN internal_classifier_models ic ON a.internal_classifier_id = ic.id
+					WHERE ic.name = ? AND ic.number = ?
+					LIMIT 1
+				`, dto.InternalClassifier.Name, *dto.InternalClassifier.Number).Scan(&artefactWithSameClassifier)
+			}
+
+			if subQuery.Error == nil && artefactWithSameClassifier.ID > 0 {
+				// Ya existe un artefacto con ese clasificador
+				if dto.InternalClassifier.Number == nil {
+					return fmt.Errorf("ya existe un artefacto con el clasificador interno '%s' (sin número)", dto.InternalClassifier.Name)
+				}
+				return fmt.Errorf("ya existe un artefacto con el clasificador interno '%s - %d'", dto.InternalClassifier.Name, *dto.InternalClassifier.Number)
+			}
+
+			// Segundo: Buscar si el clasificador ya existe (huérfano)
+			var existingClassifier models.InternalClassifierModel
+			var query *gorm.DB
+
+			if dto.InternalClassifier.Number == nil {
+				query = tx.Where("name = ? AND number IS NULL", dto.InternalClassifier.Name).First(&existingClassifier)
+			} else {
+				query = tx.Where("name = ? AND number = ?", dto.InternalClassifier.Name, *dto.InternalClassifier.Number).First(&existingClassifier)
+			}
+
+			if query.Error == nil {
+				// El clasificador existe (huérfano), reutilizarlo
+				artefact.InternalClassifierID = &existingClassifier.Id
+			} else if errors.Is(query.Error, gorm.ErrRecordNotFound) {
+				// No existe, crear nuevo clasificador
+				newClassifier := models.InternalClassifierModel{
+					Name:   dto.InternalClassifier.Name,
+					Number: dto.InternalClassifier.Number,
+				}
+				if err := tx.Create(&newClassifier).Error; err != nil {
+					return err
+				}
+				artefact.InternalClassifierID = &newClassifier.Id
+			} else {
+				return query.Error
+			}
+		}
+
+		// 2) Crear artefacto
 		if err := tx.Create(&artefact).Error; err != nil {
 			return err
 		}
 
-		// 2) Crear menciones (si hay)
+		// 3) Crear menciones (si hay)
 		if len(dto.Mentions) > 0 {
 			var mentionsToCreate []models.MentionModel
 
@@ -560,11 +709,11 @@ func (s *ArtefactService) ImportArtefactsFromExcel(r io.Reader) (*ImportResult, 
 	if len(sheetList) == 0 {
 		return nil, fmt.Errorf("el archivo Excel no contiene hojas")
 	}
-	
+
 	// Usar la primera hoja (puede tener cualquier nombre)
 	sheetName := sheetList[0]
 	log.Printf("[IMPORT] Usando hoja: %s", sheetName)
-	
+
 	rows, err := f.GetRows(sheetName)
 	if err != nil {
 		return nil, fmt.Errorf("no se pudo leer la hoja %s: %w", sheetName, err)
@@ -576,10 +725,10 @@ func (s *ArtefactService) ImportArtefactsFromExcel(r io.Reader) (*ImportResult, 
 	// ==========================================
 	// 2) Caches en memoria
 	// ==========================================
-	collectionCache := make(map[string]int)       // key: nombre colección
+	collectionCache := make(map[string]int) // key: nombre colección
 	archaeologistCache := make(map[string]int)
-	countryCache := make(map[string]int)          // key: nombre país
-	regionCache := make(map[string]int)           // key: "nombre_region|country_id"
+	countryCache := make(map[string]int)            // key: nombre país
+	regionCache := make(map[string]int)             // key: "nombre_region|country_id"
 	archaeologicalSiteCache := make(map[string]int) // key: "nombre_sitio|region_id"
 
 	// ===============================
@@ -594,7 +743,7 @@ func (s *ArtefactService) ImportArtefactsFromExcel(r io.Reader) (*ImportResult, 
 		if i == 1 {
 			continue
 		}
-		
+
 		// Fila vacía o sin código → la salto
 		if len(row) == 0 || strings.TrimSpace(row[0]) == "" {
 			continue
@@ -608,7 +757,7 @@ func (s *ArtefactService) ImportArtefactsFromExcel(r io.Reader) (*ImportResult, 
 		if len(row) > 18 {
 			collectionName = strings.TrimSpace(row[18])
 		}
-		
+
 		// Solo buscar o crear colección si se especificó una
 		if collectionName != "" {
 			var id int
@@ -909,12 +1058,12 @@ func (s *ArtefactService) ImportArtefactsFromExcel(r io.Reader) (*ImportResult, 
 		// 3.2.4. Crear artefacto
 		// ---------------------------------
 		artefact := models.ArtefactModel{
-			Name:                name,
-			Material:            material,
-			Available:           true,
-			Description:         description,
-			CollectionID:        collectionID,
-			ArchaeologistID:     archaeologistID,
+			Name:                 name,
+			Material:             material,
+			Available:            true,
+			Description:          description,
+			CollectionID:         collectionID,
+			ArchaeologistID:      archaeologistID,
 			ArchaeologicalSiteId: archaeologicalSiteID,
 		}
 
@@ -960,7 +1109,7 @@ func (s *ArtefactService) ImportArtefactsFromExcel(r io.Reader) (*ImportResult, 
 							log.Printf("[IMPORT] ERROR buscando estante con código %d: %v", shelfCode, err)
 							result.Errors = append(result.Errors, fmt.Sprintf("Fila %d: error buscando estante con código %d: %v", i+1, shelfCode, err))
 						}
-						
+
 						// Si tenemos el estante (ya existía o se creó), continuar con la asignación
 						if shelf.ID > 0 {
 							// Leer nivel (Col X = índice 23)
@@ -1057,7 +1206,7 @@ func (s *ArtefactService) ImportArtefactsFromExcel(r io.Reader) (*ImportResult, 
 				if hasHyperlink && hyperlinkTarget != "" {
 					fotoPath = hyperlinkTarget
 				}
-				
+
 				if strings.HasPrefix(fotoPath, "http://") || strings.HasPrefix(fotoPath, "https://") || strings.Contains(fotoPath, string(filepath.Separator)) {
 					// Es una ruta de archivo o URL
 					log.Printf("[IMPORT] Descargando foto para %s desde: %s", name, fotoPath)
@@ -1086,7 +1235,7 @@ func (s *ArtefactService) ImportArtefactsFromExcel(r io.Reader) (*ImportResult, 
 				if hasHyperlink && hyperlinkTarget != "" {
 					inplPath = hyperlinkTarget
 				}
-				
+
 				if strings.HasPrefix(inplPath, "http://") || strings.HasPrefix(inplPath, "https://") || strings.Contains(inplPath, string(filepath.Separator)) {
 					log.Printf("[IMPORT] Descargando ficha INPL para %s desde: %s", name, inplPath)
 					if err := s.associateINPLFromPath(&artefact, inplPath); err != nil {
@@ -1113,7 +1262,7 @@ func (s *ArtefactService) ImportArtefactsFromExcel(r io.Reader) (*ImportResult, 
 				if hasHyperlink && hyperlinkTarget != "" {
 					historicaPath = hyperlinkTarget
 				}
-				
+
 				if strings.HasPrefix(historicaPath, "http://") || strings.HasPrefix(historicaPath, "https://") || strings.Contains(historicaPath, string(filepath.Separator)) {
 					log.Printf("[IMPORT] Descargando ficha histórica para %s desde: %s", name, historicaPath)
 					if err := s.associateHistoricalRecordFromPath(&artefact, historicaPath); err != nil {
@@ -1929,7 +2078,7 @@ func (s *ArtefactService) associateINPLFromPath(artefact *models.ArtefactModel, 
 	// Verificar si ya existe una ficha INPL para este clasificador (solo debe haber una)
 	var existingFicha models.INPLFicha
 	err = s.db.Where("inpl_classifier_id = ?", inplClassifier.ID).First(&existingFicha).Error
-	
+
 	if err == nil {
 		// Ya existe una ficha, reemplazarla (eliminar archivo anterior y actualizar registro)
 		if existingFicha.FilePath != "" {
@@ -1942,7 +2091,7 @@ func (s *ArtefactService) associateINPLFromPath(artefact *models.ArtefactModel, 
 		existingFicha.ContentType = contentType
 		existingFicha.Size = fileInfo.Size()
 		existingFicha.UpdatedAt = time.Now()
-		
+
 		if err := s.db.Save(&existingFicha).Error; err != nil {
 			os.Remove(destPath)
 			return fmt.Errorf("no se pudo actualizar ficha INPL: %w", err)
