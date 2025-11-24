@@ -41,6 +41,7 @@ func main() {
 		&models.MentionModel{},
 		&models.RequesterModel{},
 		&models.LoanModel{},
+		&models.InternalMovementModel{},
 	); err != nil {
 		log.Fatalf("Error during auto-migration: %v\n", err)
 	}
@@ -90,6 +91,7 @@ func main() {
 	mentionService := services.NewMentionService(db)
 	loanService := services.NewLoanService(db)
 	requesterService := services.NewRequesterService(db)
+	internalMovementService := services.NewInternalMovementService(db)
 
 	// INPL uploads root (from env or default)
 	inplUploadRoot := os.Getenv("INPL_UPLOAD_ROOT")
@@ -115,6 +117,7 @@ func main() {
 	routes.SetupMentionRoutes(router, mentionService)
 	routes.SetupLoanRoutes(router, loanService)
 	routes.SetupRequesterRoutes(router, requesterService)
+	routes.SetupInternalMovementRoutes(router, internalMovementService)
 
 	// Test route
 	router.GET("/", func(c *gin.Context) {
