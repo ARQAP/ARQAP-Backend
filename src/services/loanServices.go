@@ -8,12 +8,17 @@ import (
 )
 
 type LoanService struct {
-	db *gorm.DB
+	db              *gorm.DB
+	artefactService *ArtefactService // Referencia opcional para invalidar caché
 }
 
 // NewLoanService creates a new instance of LoanService
-func NewLoanService(db *gorm.DB) *LoanService {
-	return &LoanService{db: db}
+// artefactService puede ser nil si no se necesita invalidar caché
+func NewLoanService(db *gorm.DB, artefactService *ArtefactService) *LoanService {
+	return &LoanService{
+		db:              db,
+		artefactService: artefactService,
+	}
 }
 
 // GetAllLoans retrieves all Loan records from the database
@@ -94,11 +99,36 @@ func (s *LoanService) CreateLoan(loan *models.LoanModel) (*models.LoanModel, err
 		return nil, err
 	}
 
+	// Invalidar caché de artefactos porque la disponibilidad cambió
+	if s.artefactService != nil && loan.ArtefactId != nil && *loan.ArtefactId != 0 {
+		s.artefactService.InvalidateArtefactCache(*loan.ArtefactId)
+	}
+
 	return loan, nil
 }
 
 // DeleteLoan deletes a Loan record by its ID
+// y marca la pieza asociada como disponible nuevamente
 func (s *LoanService) DeleteLoan(id int) error {
+	var loan models.LoanModel
+	if err := s.db.First(&loan, id).Error; err != nil {
+		return err
+	}
+
+	// Marcar la pieza como disponible nuevamente
+	if loan.ArtefactId != nil && *loan.ArtefactId != 0 {
+		if err := s.db.Model(&models.ArtefactModel{}).
+			Where("id = ?", *loan.ArtefactId).
+			Update("available", true).Error; err != nil {
+			return err
+		}
+
+		// Invalidar caché de artefactos
+		if s.artefactService != nil {
+			s.artefactService.InvalidateArtefactCache(*loan.ArtefactId)
+		}
+	}
+
 	result := s.db.Delete(&models.LoanModel{}, id)
 	return result.Error
 }
@@ -145,6 +175,11 @@ func (s *LoanService) UpdateLoan(id int, updatedLoan *models.LoanModel) (*models
 		Preload("Artefact.InternalClassifier").
 		First(&loan, id).Error; err != nil {
 		return nil, err
+	}
+
+	// Invalidar caché de artefactos porque la disponibilidad puede cambiar
+	if s.artefactService != nil && loan.ArtefactId != nil && *loan.ArtefactId != 0 {
+		s.artefactService.InvalidateArtefactCache(*loan.ArtefactId)
 	}
 
 	return &loan, nil

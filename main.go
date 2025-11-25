@@ -89,7 +89,7 @@ func main() {
 	artefactService := services.NewArtefactService(db)
 	internalLocationService := services.NewInternalClassifierService(db)
 	mentionService := services.NewMentionService(db)
-	loanService := services.NewLoanService(db)
+	loanService := services.NewLoanService(db, artefactService)
 	requesterService := services.NewRequesterService(db)
 	internalMovementService := services.NewInternalMovementService(db)
 

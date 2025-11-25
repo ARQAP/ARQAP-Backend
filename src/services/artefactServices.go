@@ -112,6 +112,20 @@ func (s *ArtefactService) invalidateCache(pattern string) {
 	}
 }
 
+// InvalidateArtefactCache invalida el caché relacionado con un artefacto específico
+// Esto se usa cuando la disponibilidad o los datos de un artefacto cambian desde otros servicios
+func (s *ArtefactService) InvalidateArtefactCache(artefactId int) {
+	// Invalidar el artefacto específico
+	s.invalidateCache(fmt.Sprintf("artefact_%d", artefactId))
+	// Invalidar todas las listas de artefactos
+	s.invalidateCache("all_artefacts")
+	// Invalidar los resúmenes
+	s.invalidateCache("artefact_summaries")
+	// Invalidar cualquier caché de shelves que pueda contener este artefacto
+	// (usamos un patrón que coincida con artefacts_shelf_)
+	s.invalidateCache("artefacts_shelf_")
+}
+
 // standardizeText normaliza un texto a Title Case: primera letra mayúscula, resto minúscula
 // Ejemplo: "arGENTINa" -> "Argentina"
 func standardizeText(text string) string {
