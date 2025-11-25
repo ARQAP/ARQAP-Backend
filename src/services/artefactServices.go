@@ -709,7 +709,15 @@ func (s *ArtefactService) GetArtefactSummaries(shelfId *int) ([]dtos.ArtefactSum
 	return summaries, nil
 }
 
+// ProgressCallback es una función opcional que se llama con el progreso de la importación
+// Recibe: fila actual, total de filas, porcentaje de progreso (0-100)
+type ProgressCallback func(currentRow int, totalRows int, progress float64)
+
 func (s *ArtefactService) ImportArtefactsFromExcel(r io.Reader) (*ImportResult, error) {
+	return s.ImportArtefactsFromExcelWithProgress(r, nil)
+}
+
+func (s *ArtefactService) ImportArtefactsFromExcelWithProgress(r io.Reader, progressCallback ProgressCallback) (*ImportResult, error) {
 	log.Println("[IMPORT] Iniciando importación de artefactos desde Excel...")
 
 	f, err := excelize.OpenReader(r)
@@ -735,6 +743,23 @@ func (s *ArtefactService) ImportArtefactsFromExcel(r io.Reader) (*ImportResult, 
 
 	log.Printf("[IMPORT] Total de filas en %s: %d", sheetName, len(rows))
 	result := &ImportResult{Imported: 0, Errors: []string{}}
+
+	// Calcular número total de filas procesables (excluyendo encabezados y vacías)
+	totalProcessableRows := 0
+	for i := 2; i < len(rows); i++ { // Empieza desde la fila 2 (índice 2), saltando encabezados
+		if len(rows[i]) > 0 && strings.TrimSpace(rows[i][0]) != "" {
+			totalProcessableRows++
+		}
+	}
+	
+	log.Printf("[IMPORT] Total de filas procesables: %d", totalProcessableRows)
+	
+	// Llamar callback inicial si está disponible
+	if progressCallback != nil {
+		progressCallback(0, totalProcessableRows, 0.0)
+	}
+
+	processedRows := 0
 
 	// ==========================================
 	// 2) Caches en memoria
@@ -1386,9 +1411,24 @@ func (s *ArtefactService) ImportArtefactsFromExcel(r io.Reader) (*ImportResult, 
 		}
 
 		result.Imported++
+		processedRows++
+		
+		// Emitir progreso cada 10 filas procesadas o cada 5%
+		if progressCallback != nil && (processedRows%10 == 0 || processedRows == totalProcessableRows) {
+			progress := float64(processedRows) / float64(totalProcessableRows) * 100.0
+			if progress > 100.0 {
+				progress = 100.0
+			}
+			progressCallback(processedRows, totalProcessableRows, progress)
+		}
 	}
 
 	s.invalidateCache("all_artefacts")
+
+	// Llamar callback final si está disponible
+	if progressCallback != nil {
+		progressCallback(processedRows, totalProcessableRows, 100.0)
+	}
 
 	log.Printf("[IMPORT] ========================================")
 	log.Printf("[IMPORT] Importación completada")
