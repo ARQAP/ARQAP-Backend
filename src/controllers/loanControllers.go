@@ -54,6 +54,11 @@ func (c *LoanController) CreateLoan(ctx *gin.Context) {
 	
 	createdLoan, err := c.service.CreateLoan(&loan)
 	if err != nil {
+		// Si el error indica que la pieza no está disponible, devolver 400 Bad Request
+		if err.Error() == "la pieza arqueológica no está disponible para préstamo (ya está prestada)" {
+			ctx.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
 		ctx.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}

@@ -89,6 +89,11 @@ func (c *InternalMovementController) CreateInternalMovement(ctx *gin.Context) {
 
 	createdMovement, err := c.service.CreateInternalMovement(&movement)
 	if err != nil {
+		// Si el error indica que la pieza no está disponible, devolver 400 Bad Request
+		if err.Error() == "la pieza arqueológica no está disponible para movimientos internos (ya está prestada)" {
+			ctx.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
 		ctx.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -111,6 +116,11 @@ func (c *InternalMovementController) CreateBatchInternalMovements(ctx *gin.Conte
 
 	createdMovements, err := c.service.CreateBatchInternalMovements(movementPointers)
 	if err != nil {
+		// Si el error indica que la pieza no está disponible, devolver 400 Bad Request
+		if err.Error() == "la pieza arqueológica no está disponible para movimientos internos (ya está prestada)" {
+			ctx.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
 		ctx.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}

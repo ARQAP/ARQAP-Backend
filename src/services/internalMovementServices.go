@@ -1,6 +1,7 @@
 package services
 
 import (
+	"errors"
 	"time"
 
 	"github.com/ARQAP/ARQAP-Backend/src/models"
@@ -38,6 +39,19 @@ func (s *InternalMovementService) CreateBatchInternalMovements(movements []*mode
 		for _, movement := range movements {
 			// Assign the same group ID to all movements in the batch
 			movement.GroupMovementId = &groupMovementId
+
+			// 0) Verificar que la pieza esté disponible antes de crear el movimiento
+			var artefact models.ArtefactModel
+			if err := tx.First(&artefact, movement.ArtefactId).Error; err != nil {
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					return errors.New("la pieza arqueológica no existe")
+				}
+				return err
+			}
+			
+			if !artefact.Available {
+				return errors.New("la pieza arqueológica no está disponible para movimientos internos (ya está prestada)")
+			}
 
 			// Use the existing CreateInternalMovement logic for each movement
 			// But we need to do it within this transaction
@@ -214,6 +228,19 @@ func (s *InternalMovementService) GetActiveInternalMovementByArtefactID(artefact
 // Si la pieza ya tiene un movimiento activo, lo finaliza primero y usa su ubicación destino como origen del nuevo
 func (s *InternalMovementService) CreateInternalMovement(movement *models.InternalMovementModel) (*models.InternalMovementModel, error) {
 	err := s.db.Transaction(func(tx *gorm.DB) error {
+		// 0) Verificar que la pieza esté disponible antes de crear el movimiento
+		var artefact models.ArtefactModel
+		if err := tx.First(&artefact, movement.ArtefactId).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return errors.New("la pieza arqueológica no existe")
+			}
+			return err
+		}
+		
+		if !artefact.Available {
+			return errors.New("la pieza arqueológica no está disponible para movimientos internos (ya está prestada)")
+		}
+
 		// 1) Buscar movimientos activos previos de la misma pieza
 		var activeMovements []models.InternalMovementModel
 		if err := tx.Where("artefact_id = ? AND return_date IS NULL AND return_time IS NULL", movement.ArtefactId).

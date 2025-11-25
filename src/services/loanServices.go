@@ -1,6 +1,8 @@
 package services
 
 import (
+	"errors"
+
 	"github.com/ARQAP/ARQAP-Backend/src/models"
 	"gorm.io/gorm"
 )
@@ -47,12 +49,27 @@ func (s *LoanService) GetLoanByID(id int) (*models.LoanModel, error) {
 // y marca la pieza asociada como no disponible (available = false)
 func (s *LoanService) CreateLoan(loan *models.LoanModel) (*models.LoanModel, error) {
 	err := s.db.Transaction(func(tx *gorm.DB) error {
-		// 1) Crear el préstamo
+		// 1) Verificar que la pieza esté disponible antes de crear el préstamo
+		if loan.ArtefactId != nil && *loan.ArtefactId != 0 {
+			var artefact models.ArtefactModel
+			if err := tx.First(&artefact, *loan.ArtefactId).Error; err != nil {
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					return errors.New("la pieza arqueológica no existe")
+				}
+				return err
+			}
+
+			if !artefact.Available {
+				return errors.New("la pieza arqueológica no está disponible para préstamo (ya está prestada)")
+			}
+		}
+
+		// 2) Crear el préstamo
 		if err := tx.Create(loan).Error; err != nil {
 			return err
 		}
 
-		// 2) Marcar la pieza como NO disponible
+		// 3) Marcar la pieza como NO disponible
 		if loan.ArtefactId != nil && *loan.ArtefactId != 0 {
 			if err := tx.Model(&models.ArtefactModel{}).
 				Where("id = ?", *loan.ArtefactId).
